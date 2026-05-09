@@ -264,6 +264,36 @@ def save_listings(listings: list[dict]):
     return saved
 
 
+def save_llm_analysis(url: str, analysis: dict):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE listings
+        SET llm_analysis = %s, updated_at = NOW()
+        WHERE url = %s
+    """, (Json(analysis) if analysis else None, url))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_listings_for_llm_analysis(limit: int = 10) -> list[dict]:
+    conn = get_conn()
+    cur = conn.cursor()
+    # Analizujemy tylko oferty, ktore MOGĄ byc ciekawe (np. score > 0.08) i nie mają analizy
+    cur.execute("""
+        SELECT * FROM listings
+        WHERE llm_analysis IS NULL AND score > 0.08
+        ORDER BY score DESC NULLS LAST, created_at DESC
+        LIMIT %s
+    """, (limit,))
+    cols = [d[0] for d in cur.description]
+    rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+    cur.close()
+    conn.close()
+    return rows
+
+
 def save_listing_history(listings: list[dict]):
     if not listings:
         return

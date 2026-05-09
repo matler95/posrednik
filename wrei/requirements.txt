@@ -10,3 +10,4 @@ lxml
 APScheduler
 scikit-learn
 joblib
+spacy

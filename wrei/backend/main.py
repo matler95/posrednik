@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from backend.analysis import enrich_listings, find_opportunities
 from backend.db import init_db, save_listings
 from backend.scheduler import start_scheduler, crawl_all_sources
@@ -71,6 +71,7 @@ def search_listings(
 
 @app.post("/run-crawl")
 def run_crawl(
+    background_tasks: BackgroundTasks,
     portals: str = Query("otodom", description="Lista portali do przeszukania, np. otodom,olx."),
     pages: int = Query(1, ge=1, description="Liczba stron do przeszukania na portalu."),
     min_price: int | None = Query(None, ge=0, description="Minimalna cena oferty."),
@@ -92,6 +93,11 @@ def run_crawl(
             direct_only=direct_only,
         )
         save_listings(listings)
+        
+        # Odlóz analize LLM w tlo
+        from backend.nlp.llm_scorer import process_llm_queue
+        background_tasks.add_task(process_llm_queue)
+        
         return {"status": "ok", "saved": len(listings)}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

@@ -23,6 +23,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_HOST: db
+      OLLAMA_URL: http://host.docker.internal:11434/api/chat
 
   dashboard:
     build:
