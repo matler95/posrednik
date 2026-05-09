@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+streamlit
+psycopg[binary]
+requests
+beautifulsoup4
+lxml
+APScheduler
