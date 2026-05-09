@@ -1,1 +1,3 @@
 /.venv
+wrei/backend/__pycache__/
+wrei/backend/*.pyc
