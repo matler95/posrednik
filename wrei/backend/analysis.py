@@ -1,11 +1,11 @@
 from backend.model import (
-    estimate_value,
     group_average_price_per_sqm,
     market_position,
     opportunity_score,
     price_gap_ratio,
     price_per_square_meter,
 )
+from backend.ml.predictor import predict_value
 
 POSITIVE_KEYWORDS = [
     "okazja",
@@ -61,20 +61,23 @@ def enrich_listings(listings):
     for listing in listings:
         listing = listing.copy()
         listing["price_per_m2"] = listing.get("price_per_m2") or price_per_square_meter(listing)
-        listing["estimated_value"] = estimate_value(listing, averages)
-        listing["price_gap_pct"] = price_gap_ratio(listing.get("price"), listing["estimated_value"])
+        
+        ml_est, is_ml = predict_value(listing, averages)
+        listing["estimated_value"] = ml_est
+        listing["is_ml_estimate"] = is_ml
+        
+        listing["price_gap_pct"] = price_gap_ratio(listing.get("price"), ml_est)
         listing["market_position"] = market_position(listing, averages)
         listing["direct_bonus"] = 0.05 if listing.get("direct_offer") else 0.0
+        
         description_analysis = analyze_description(listing.get("description"))
         listing["text_bonus"] = description_analysis["text_bonus"]
         listing["text_penalty"] = description_analysis["text_penalty"]
+        listing["text_score"] = max(0.0, min(1.0, 0.5 + description_analysis["text_bonus"] - description_analysis["text_penalty"]))
+        
         listing["keywords"] = description_analysis["keywords"]
-        listing["score"] = opportunity_score(
-            listing["price_gap_pct"],
-            direct_bonus=listing["direct_bonus"],
-            text_bonus=listing["text_bonus"],
-            text_penalty=listing["text_penalty"],
-        )
+        
+        listing["score"] = opportunity_score(listing, averages, ml_est)
         enriched.append(listing)
     return enriched
 

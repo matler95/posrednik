@@ -26,6 +26,8 @@ def crawl_all_sources(portals="otodom", pages=1, direct_only=False):
 
 def start_scheduler(interval_minutes=60):
     init_db()
+    
+    # 1. Scrapowanie
     scheduler.add_job(
         crawl_all_sources,
         "interval",
@@ -34,8 +36,32 @@ def start_scheduler(interval_minutes=60):
         id="crawl_all_sources",
         replace_existing=True,
     )
+    
+    # 2. Market stats (codziennie o 3:00)
+    from backend.db import generate_market_stats
+    scheduler.add_job(
+        generate_market_stats,
+        "cron",
+        hour=3,
+        minute=0,
+        id="stats_update",
+        replace_existing=True,
+    )
+    
+    # 3. Trening modelu ML (co niedzielę o 2:00)
+    from backend.ml.trainer import train_model
+    scheduler.add_job(
+        train_model,
+        "cron",
+        day_of_week="sun",
+        hour=2,
+        minute=0,
+        id="ml_retrain",
+        replace_existing=True,
+    )
+    
     scheduler.start()
-    logger.info("Scheduler uruchomiony co %s minut", interval_minutes)
+    logger.info("Scheduler uruchomiony z zadanym interwalem: %s minut", interval_minutes)
 
 
 def stop_scheduler():

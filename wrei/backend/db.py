@@ -254,6 +254,13 @@ def save_listings(listings: list[dict]):
     conn.commit()
     cur.close()
     conn.close()
+    
+    # Faza 2: Snapshot do historii
+    try:
+        save_listing_history(listings)
+    except Exception as e:
+        logger.warning(f"Nie udalo sie zapisac listing_history: {e}")
+        
     return saved
 
 
@@ -351,6 +358,50 @@ def get_market_stats(district: str = None) -> list[dict]:
     cur.close()
     conn.close()
     return rows
+
+
+def generate_market_stats():
+    """
+    Agreguje aktualne oferty (listings) do tabeli market_stats.
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT 
+            COALESCE(district, 'Warszawa') as district,
+            CAST(rooms AS integer) as parsed_rooms,
+            condition,
+            AVG(price_per_m2) as avg_price,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price_per_m2) as median_price,
+            PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY price_per_m2) as p25_price,
+            PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY price_per_m2) as p75_price,
+            COUNT(*) as sample_count
+        FROM listings
+        WHERE price_per_m2 IS NOT NULL AND rooms ~ '^[0-9]+$'
+        GROUP BY 1, 2, 3
+        HAVING COUNT(*) >= 5
+    """)
+    rows = cur.fetchall()
+    
+    stats_to_upsert = []
+    for row in rows:
+        stats_to_upsert.append({
+            "district": row[0],
+            "rooms": _to_int(row[1]),
+            "condition": row[2],
+            "avg": float(row[3]) if row[3] else None,
+            "median": float(row[4]) if row[4] else None,
+            "p25": float(row[5]) if row[5] else None,
+            "p75": float(row[6]) if row[6] else None,
+            "count": int(row[7])
+        })
+    cur.close()
+    conn.close()
+    
+    if stats_to_upsert:
+        upsert_market_stats(stats_to_upsert)
+        logger.info(f"[DB] Zaktualizowano market_stats dla {len(stats_to_upsert)} grup.")
+
 
 
 # ---------------------------------------------------------------------------

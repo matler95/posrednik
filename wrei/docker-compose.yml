@@ -16,6 +16,8 @@ services:
       - "8000:8000"
     depends_on:
       - db
+    volumes:
+      - ./backend:/app/backend
     environment:
       POSTGRES_DB: wrei
       POSTGRES_USER: postgres
