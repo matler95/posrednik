@@ -1,16 +1,12 @@
+# backend/scrapers/olx.py
+
 import re
 from urllib.parse import quote_plus
 
-import requests
+import httpx
 from bs4 import BeautifulSoup
 
-from backend.scraper_utils import (
-    apply_filters,
-    build_query_string,
-    fetch_html,
-    normalize_rooms_value,
-    room_matches,
-)
+from backend.scraper_utils import apply_filters, build_query_string, fetch_html
 
 OLX_BASE_URL = "https://www.olx.pl/nieruchomosci/mieszkania/warszawa"
 
@@ -19,15 +15,111 @@ def available():
     return "olx"
 
 
+def normalize_rooms_value(rooms):
+    if not rooms:
+        return None
+    if isinstance(rooms, int):
+        rooms = str(rooms)
+    mapping = {"1": "one", "2": "two", "3": "three", "4": "four",
+               "5": "five", "6": "six", "7": "seven", "8": "eight",
+               "9": "nine", "10": "ten"}
+    return mapping.get(rooms)
+
+
+def extract_area_from_text(text: str) -> float | None:
+    """Wyciąga metraż z tytułu lub opisu, np. '55m²', '55 m2', '55,5 m²'"""
+    match = re.search(r"(\d+(?:[.,]\d+)?)\s*m[²2]", text, re.IGNORECASE)
+    if match:
+        return float(match.group(1).replace(",", "."))
+    return None
+
+
+def extract_price(price_text: str) -> int | None:
+    price_text = price_text.replace("zł", "").replace("\xa0", "").replace(" ", "").strip()
+    if any(x in price_text.lower() for x in ["doniegocjacji", "dowyceny", "zapytaj"]):
+        return None
+    match = re.search(r"(\d+(?:\s?\d+)*)", price_text.replace(" ", ""))
+    if match:
+        return int(re.sub(r"\D", "", match.group(1)))
+    return None
+
+
+def extract_listings_from_html(html: str) -> list[dict]:
+    soup = BeautifulSoup(html, "lxml")
+    listings = []
+
+    cards = soup.find_all("div", {"data-cy": "l-card"})
+    for card in cards:
+        try:
+            # Tytuł
+            title_elem = card.find("h4") or card.find("h3")
+            title = title_elem.get_text(strip=True) if title_elem else ""
+            if not title:
+                img = card.find("img")
+                title = img["alt"] if img and "alt" in img.attrs else "Bez tytułu"
+
+            # Cena
+            price_elem = card.find("p", {"data-testid": "ad-price"})
+            price_text = price_elem.get_text(strip=True) if price_elem else ""
+            price = extract_price(price_text)
+
+            # Metraż — z tytułu
+            area = extract_area_from_text(title)
+
+            # Jeśli nie w tytule — szukaj w parametrach karty
+            if area is None:
+                params_text = card.get_text(" ", strip=True)
+                area = extract_area_from_text(params_text)
+
+            # Dzielnica
+            location_elem = card.find("p", {"data-testid": "location-date"})
+            district = "Warszawa"
+            if location_elem:
+                location_text = location_elem.get_text(strip=True)
+                district_match = re.match(r"^([^,\-–]+)", location_text)
+                if district_match:
+                    district = district_match.group(1).strip()
+
+            # Pokoje z tytułu
+            rooms = None
+            rooms_match = re.search(r"(\d+)\s*pok", title, re.IGNORECASE)
+            if rooms_match:
+                rooms = int(rooms_match.group(1))
+
+            # URL
+            link_elem = card.find("a", href=True)
+            url = link_elem["href"] if link_elem else ""
+            if url.startswith("/"):
+                url = f"https://www.olx.pl{url}"
+
+            # Oferta bezpośrednia
+            card_text = card.get_text().lower()
+            direct_offer = "oferta prywatna" in card_text
+
+            if price:
+                listings.append({
+                    "portal": "olx",        # BUG FIX — brakowało
+                    "title": title,
+                    "price": price,
+                    "area": area,           # BUG FIX — teraz wyciągamy
+                    "rooms": rooms,
+                    "district": district,
+                    "url": url,
+                    "direct_offer": direct_offer,
+                    "source": "olx",
+                })
+        except Exception as e:
+            print(f"[OLX] Błąd parsowania karty: {e}")
+            continue
+
+    return listings
+
+
 def build_olx_url(
-    min_price=None,
-    max_price=None,
-    min_area=None,
-    max_area=None,
-    rooms=None,
-    direct_only=False,
-    page=1,
-):
+    min_price=None, max_price=None,
+    min_area=None, max_area=None,
+    rooms=None, direct_only=False, page=1,
+) -> str:
     params = {}
     if min_price is not None:
         params["search[filter_float_price:from]"] = str(min_price)
@@ -38,144 +130,33 @@ def build_olx_url(
     if max_area is not None:
         params["search[filter_float_m:to]"] = str(max_area)
     if rooms:
-        rooms_normalized = normalize_rooms_value(rooms)
-        if rooms_normalized:
-            params["search[filter_enum_rooms][0]"] = rooms_normalized
+        normalized = normalize_rooms_value(str(rooms))
+        if normalized:
+            params["search[filter_enum_rooms][0]"] = normalized
     if direct_only:
         params["search[filter_enum_advertiser_type][0]"] = "private"
-    if page and page > 1:
+    if page > 1:
         params["page"] = str(page)
 
     if not params:
         return OLX_BASE_URL
-
     return f"{OLX_BASE_URL}?{build_query_string(params)}"
 
 
-def normalize_rooms_value(rooms):
-    if not rooms:
-        return None
-    if isinstance(rooms, int):
-        rooms = str(rooms)
-    if rooms == "1":
-        return "one"
-    elif rooms == "2":
-        return "two"
-    elif rooms == "3":
-        return "three"
-    elif rooms == "4":
-        return "four"
-    elif rooms == "5":
-        return "five"
-    elif rooms == "6":
-        return "six"
-    elif rooms == "7":
-        return "seven"
-    elif rooms == "8":
-        return "eight"
-    elif rooms == "9":
-        return "nine"
-    elif rooms == "10":
-        return "ten"
-    return None
-
-
-def extract_listings_from_html(html):
-    soup = BeautifulSoup(html, "lxml")
-    listings = []
-
-    # OLX listings are in divs with data-cy="l-card"
-    cards = soup.find_all("div", {"data-cy": "l-card"})
-    for card in cards:
-        try:
-            # Title from img alt
-            img = card.find("img")
-            title = img['alt'] if img and 'alt' in img.attrs else "Bez tytułu"
-
-            # Price
-            price_elem = card.find("p", {"data-testid": "ad-price"})
-            price_text = price_elem.get_text(strip=True) if price_elem else ""
-            price = extract_price(price_text)
-
-            # Location and date
-            location_elem = card.find("p", {"data-testid": "location-date"})
-            district = "Warszawa"
-            if location_elem:
-                location_text = location_elem.get_text(strip=True)
-                # Extract district from location
-                district_match = re.search(r"(.+?),", location_text)
-                if district_match:
-                    district = district_match.group(1).strip()
-
-            # Extract rooms from title
-            rooms = None
-            rooms_match = re.search(r"(\d+)\s*pok", title, re.I)
-            if rooms_match:
-                rooms = int(rooms_match.group(1))
-
-            # Area - not always available in list, set to None
-            area = None
-
-            # URL
-            link_elem = card.find("a", href=True)
-            url = link_elem["href"] if link_elem else ""
-            if url.startswith("/"):
-                url = f"https://www.olx.pl{url}"
-
-            # Direct offer - check for "Oferta prywatna"
-            direct_offer = "oferta prywatna" in card.get_text().lower()
-
-            if price:
-                listings.append({
-                    "title": title,
-                    "price": price,
-                    "area": area,
-                    "rooms": rooms,
-                    "district": district,
-                    "url": url,
-                    "direct_offer": direct_offer,
-                    "source": "olx",
-                })
-        except Exception as e:
-            print(f"Error parsing OLX listing: {e}")
-            continue
-
-    return listings
-
-
-def extract_price(price_text):
-    # Remove "zł" and spaces, handle "do negocjacji"
-    price_text = price_text.replace("zł", "").replace(" ", "").strip()
-    if "doniegocjacji" in price_text.lower() or "dowyceny" in price_text.lower():
-        return None
-    # Extract number
-    match = re.search(r"(\d+(?:,\d+)*)", price_text)
-    if match:
-        return int(match.group(1).replace(",", ""))
-    return None
-
-
 def search(
-    min_price=None,
-    max_price=None,
-    min_area=None,
-    max_area=None,
-    rooms=None,
-    pages=1,
-    direct_only=False,
-):
+    min_price=None, max_price=None,
+    min_area=None, max_area=None,
+    rooms=None, pages=1, direct_only=False,
+    **kwargs,  # query_url ignorowany dla OLX
+) -> list[dict]:
     all_listings = []
     for page in range(1, pages + 1):
         url = build_olx_url(
-            min_price=min_price,
-            max_price=max_price,
-            min_area=min_area,
-            max_area=max_area,
-            rooms=rooms,
-            direct_only=direct_only,
-            page=page,
+            min_price=min_price, max_price=max_price,
+            min_area=min_area, max_area=max_area,
+            rooms=rooms, direct_only=direct_only, page=page,
         )
-        print(f"Fetching OLX page {page}: {url}")
+        print(f"[OLX] Strona {page}: {url}")
         html = fetch_html(url)
         if not html:
             break
@@ -184,14 +165,9 @@ def search(
             break
         all_listings.extend(listings)
 
-    # Apply additional filters if needed
-    filtered = apply_filters(
+    return apply_filters(
         all_listings,
-        min_price=min_price,
-        max_price=max_price,
-        min_area=min_area,
-        max_area=max_area,
-        rooms=rooms,
-        direct_only=direct_only,
+        min_price=min_price, max_price=max_price,
+        min_area=min_area, max_area=max_area,
+        rooms=rooms, direct_only=direct_only,
     )
-    return filtered

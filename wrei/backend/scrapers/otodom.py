@@ -80,31 +80,47 @@ def extract_district(location):
     return "Warszawa"
 
 
+# backend/scrapers/otodom.py — tylko funkcja normalize_listing, reszta bez zmian
+
 def normalize_listing(item, source_url):
     price_data = item.get("totalPrice") or item.get("priceFromPerSquareMeter") or {}
     price = price_data.get("value") if isinstance(price_data, dict) else None
-    area = item.get("areaInSquareMeters") or item.get("investmentUnitsAreaInSquareMeters") or item.get("terrainAreaInSquareMeters")
+    area = (
+        item.get("areaInSquareMeters")
+        or item.get("investmentUnitsAreaInSquareMeters")
+        or item.get("terrainAreaInSquareMeters")
+    )
     district = extract_district(item.get("location", {}))
+
     url = item.get("href", "")
     slug = item.get("slug")
     if slug:
         url = f"https://www.otodom.pl/pl/oferta/{slug}"
-    elif url and url.startswith("[lang]"):
+    elif url.startswith("[lang]"):
         url = url.replace("[lang]", "")
-    if url and url.startswith("/"):
+    if url.startswith("/"):
         url = f"https://www.otodom.pl{url}"
 
+    # BUG FIX — advertType: "PRIVATE" = bezpośredni, "AGENCY" = biuro
+    advert_type = item.get("advertType", "")
+    direct_offer = str(advert_type).upper() == "PRIVATE"
+
     return {
+        "portal": "otodom",
         "title": item.get("title") or item.get("shortDescription") or "Bez tytułu",
         "price": int(price) if isinstance(price, (int, float)) else None,
         "area": float(area) if isinstance(area, (int, float)) else None,
         "district": district,
         "rooms": item.get("roomsNumber") or item.get("roomsNumberLabel"),
-        "price_per_m2": item.get("pricePerSquareMeter", {}).get("value") if isinstance(item.get("pricePerSquareMeter"), dict) else None,
+        "price_per_m2": (
+            item.get("pricePerSquareMeter", {}).get("value")
+            if isinstance(item.get("pricePerSquareMeter"), dict)
+            else None
+        ),
         "url": url or source_url,
         "source": source_url,
         "portal": "otodom",
-        "direct_offer": item.get("agency") is None,
+        "direct_offer": direct_offer,   # BUG FIX
         "raw_location": item.get("location", {}),
         "description": item.get("shortDescription"),
     }

@@ -1,7 +1,9 @@
 fastapi
 uvicorn[standard]
 streamlit
-psycopg[binary]
+psycopg2-binary
+httpx
+tenacity
 requests
 beautifulsoup4
 lxml
