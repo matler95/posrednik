@@ -31,18 +31,38 @@ export default function Stats() {
     fetchStats();
   }, [selectedDistrict]);
 
+  const handleIngest = async () => {
+    setLoading(true);
+    try {
+      await marketApi.ingest();
+      alert('Zadanie importu danych RCN uruchomione. Odśwież za kilka minut.');
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   if (loading) return <div className="animate-pulse space-y-8"><div className="h-96 card-premium" /><div className="h-96 card-premium" /></div>;
 
   return (
     <div className="space-y-8 animate-in fade-in duration-700">
-      <div>
-         <h1 className="text-3xl font-black text-white flex items-center gap-3">
-           <BarChart2 className="text-premium-accent w-8 h-8" />
-           Analityka Rynkowa
-         </h1>
-         <p className="text-premium-muted mt-1">
-           Dane transakcyjne na podstawie bazy RCN (Deweloperuch)
-         </p>
+      <div className="flex justify-between items-end">
+        <div>
+           <h1 className="text-3xl font-black text-white flex items-center gap-3">
+             <BarChart2 className="text-premium-accent w-8 h-8" />
+             Analityka Rynkowa
+           </h1>
+           <p className="text-premium-muted mt-1">
+             Dane transakcyjne na podstawie bazy RCN (Deweloperuch)
+           </p>
+        </div>
+        <button 
+          onClick={handleIngest}
+          className="text-xs bg-slate-800 hover:bg-slate-700 text-premium-muted px-4 py-2 rounded-xl border border-slate-700 transition-colors"
+        >
+          Aktualizuj bazę RCN
+        </button>
       </div>
 
       {/* Main Charts */}

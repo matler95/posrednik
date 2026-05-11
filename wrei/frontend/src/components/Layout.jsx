@@ -48,9 +48,9 @@ export function Layout() {
           </nav>
 
           <div className="flex items-center gap-4">
-             <button className="p-2 text-premium-muted hover:text-white transition-colors">
+             <Link to="/hunt/settings" className="p-2 text-premium-muted hover:text-white transition-colors">
                <Settings className="w-5 h-5" />
-             </button>
+             </Link>
              <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-premium-accent to-blue-400 border border-slate-700"></div>
           </div>
         </div>

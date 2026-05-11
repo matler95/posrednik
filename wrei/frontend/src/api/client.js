@@ -19,6 +19,7 @@ export const listingApi = {
 export const marketApi = {
   getTrend: (params) => client.get('/market/trend', { params }),
   getDistricts: () => client.get('/market/districts'),
+  ingest: (params) => client.post('/market/ingest', null, { params }),
 };
 
 export default client;

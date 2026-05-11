@@ -3,11 +3,14 @@ import { huntApi } from '../api/client';
 import { ListingCard } from '../components/ListingCard';
 import { Target, TrendingUp, AlertCircle, Search, RefreshCw, SlidersHorizontal } from 'lucide-react';
 
+import { Link } from 'react-router-dom';
+
 export default function Hunt() {
   const [status, setStatus] = useState(null);
   const [listings, setListings] = useState([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState('opportunities');
+  const [message, setMessage] = useState(null);
 
   useEffect(() => {
     fetchData();
@@ -29,10 +32,32 @@ export default function Hunt() {
     }
   };
 
+  const handleRunCrawl = async () => {
+    setLoading(true);
+    try {
+      await huntApi.runCrawl({ pages: 2 });
+      setMessage({ type: 'success', text: 'Zadanie scrapowania uruchomione w tle.' });
+      setTimeout(() => setMessage(null), 3000);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const opportunities = listings.filter(l => l.score >= 0.25);
 
   return (
     <div className="space-y-8 animate-in fade-in duration-700">
+      {message && (
+        <div className="fixed top-24 right-8 z-50 animate-in slide-in-from-right duration-300">
+           <div className={`p-4 rounded-xl shadow-2xl border flex items-center gap-3 ${message.type === 'success' ? 'bg-emerald-500 border-emerald-400 text-white' : 'bg-red-500 border-red-400 text-white'}`}>
+              <RefreshCw className="w-5 h-5 animate-spin" />
+              <span className="font-bold">{message.text}</span>
+           </div>
+        </div>
+      )}
+
       {/* Header & Status */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
@@ -47,16 +72,25 @@ export default function Hunt() {
         </div>
         <div className="flex gap-3">
           <button 
-            onClick={fetchData} 
+            onClick={handleRunCrawl}
             disabled={loading}
-            className="p-3 bg-slate-800 hover:bg-slate-700 rounded-xl border border-slate-700 transition-all active:scale-95 disabled:opacity-50"
+            title="Skanuj teraz"
+            className="btn-primary bg-slate-800 hover:bg-slate-700 border border-slate-700 p-3"
           >
             <RefreshCw className={loading ? "animate-spin w-5 h-5" : "w-5 h-5"} />
           </button>
-          <button className="btn-primary flex items-center gap-2">
+          <button 
+            onClick={fetchData} 
+            disabled={loading}
+            title="Odśwież listę"
+            className="p-3 bg-slate-800 hover:bg-slate-700 rounded-xl border border-slate-700 transition-all active:scale-95 disabled:opacity-50"
+          >
+            <Search className="w-5 h-5" />
+          </button>
+          <Link to="/hunt/settings" className="btn-primary flex items-center gap-2">
             <SlidersHorizontal className="w-4 h-4" />
             Konfiguracja
-          </button>
+          </Link>
         </div>
       </div>
 
