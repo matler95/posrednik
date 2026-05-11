@@ -1,11 +1,11 @@
 """
-model.py — kalkulacje cenowe i opportunity score.
-NAPRAWKA: dynamiczne wagi — brak AI nie karze oferty.
+model.py — kalkulacje cenowe i composite opportunity score.
+Dynamiczne wagi: brak AI nie karze oferty.
 """
 from statistics import mean
 
 
-def price_per_square_meter(listing):
+def price_per_square_meter(listing: dict) -> float | None:
     price = listing.get("price")
     area = listing.get("area")
     if not price or not area or area <= 0:
@@ -13,8 +13,8 @@ def price_per_square_meter(listing):
     return round(price / area, 2)
 
 
-def group_average_price_per_sqm(listings):
-    by_location = {}
+def group_average_price_per_sqm(listings: list[dict]) -> dict[str, float]:
+    by_location: dict[str, list[float]] = {}
     for listing in listings:
         psm = price_per_square_meter(listing)
         if not psm:
@@ -25,14 +25,13 @@ def group_average_price_per_sqm(listings):
             or "Warszawa"
         )
         by_location.setdefault(location, []).append(psm)
-
     averaged = {k: round(mean(v), 2) for k, v in by_location.items() if v}
     if averaged and "Warszawa" not in averaged:
         averaged["Warszawa"] = round(mean(averaged.values()), 2)
     return averaged
 
 
-def estimate_value(listing, averages):
+def estimate_value(listing: dict, averages: dict) -> int | None:
     if not listing.get("area"):
         return None
     district = listing.get("district") or "Warszawa"
@@ -46,13 +45,13 @@ def estimate_value(listing, averages):
     return round(base_price * listing["area"])
 
 
-def price_gap_ratio(price, estimated_value):
+def price_gap_ratio(price: int | None, estimated_value: int | None) -> float:
     if not price or not estimated_value or estimated_value <= 0:
         return 0.0
     return max(0.0, (estimated_value - price) / estimated_value)
 
 
-def market_position(listing, averages):
+def market_position(listing: dict, averages: dict) -> float | None:
     psm = price_per_square_meter(listing)
     if not psm:
         return None
@@ -63,10 +62,10 @@ def market_position(listing, averages):
     return round((avg - psm) / avg, 4)
 
 
-def transaction_gap_ratio(listing, rcn_benchmark: float | None) -> float:
+def transaction_gap_ratio(listing: dict, rcn_benchmark: float | None) -> float:
     """
     > 0 : oferta tańsza od mediany transakcyjnej (okazja)
-    < 0 : oferta droższa od rynku transakcyjnego
+    < 0 : oferta droższa niż realne transakcje
     """
     if not rcn_benchmark or rcn_benchmark <= 0:
         return 0.0
@@ -78,7 +77,7 @@ def transaction_gap_ratio(listing, rcn_benchmark: float | None) -> float:
 
 
 def value_growth_bonus(cagr: float | None) -> float:
-    """Premia za wzrost wartości rynku (CAGR z RCN). Max +0.10."""
+    """Premia za wzrost rynku (CAGR z RCN). Max +0.10, min -0.05."""
     if cagr is None:
         return 0.0
     if cagr >= 0.10:
@@ -91,69 +90,62 @@ def value_growth_bonus(cagr: float | None) -> float:
 
 
 def opportunity_score(
-    listing,
-    averages,
-    ml_estimate,
+    listing: dict,
+    averages: dict,
+    ml_estimate: int | None,
     rcn_benchmark: float | None = None,
     cagr: float | None = None,
 ) -> float:
     """
-    Composite score 0-1 oceniający atrakcyjność oferty.
+    Composite score 0-1.
 
-    DYNAMICZNE WAGI — jeśli brak analizy AI, budżet wag jest redystrybuowany
-    na komponenty finansowe. Oferty bez AI NIE są karane.
+    Wagi bazowe (sumują się do 1.0, zawsze obecne):
+      price_gap    0.35  — ML/average estimate vs cena
+      txn_gap      0.30  — mediana RCN vs cena/m²
+      market_pos   0.15  — pozycja vs bieżące oferty
+      freshness    0.12  — bonus nowe ogłoszenie (<1 dzień)
+      direct       0.08  — oferta bezpośrednia
 
-    Komponenty bazowe (zawsze obecne):
-      - price_gap      : ML/average estimate vs cena oferty
-      - transaction_gap: mediana RCN vs cena/m²
-      - market_pos     : pozycja vs bieżący rynek ofertowy
-      - freshness      : bonus za ogłoszenie < 1 dzień
-      - direct         : bonus za ofertę bezpośrednią
+    AI boost (addytywny, nie zastępuje):
+      text_score   +max 8%
+      photo_score  +max 5%
 
-    Komponenty AI (opcjonalne — dodają bonus gdy dostępne):
-      - text_score     : analiza LLM opisu
-      - photo_score    : analiza CV zdjęć
-
-    Mnożnik stanu technicznego: 0.70-1.00
+    Mnożnik stanu technicznego: 0.70–1.00
     CAGR bonus: addytywny max +0.10
     """
     price = listing.get("price")
 
-    # ── 1. ML/average gap ──────────────────────────────────────────
+    # 1. ML/average gap
     if not price or not ml_estimate or ml_estimate <= 0:
         price_gap = 0.0
     else:
         price_gap = max(0.0, (ml_estimate - price) / ml_estimate)
 
-    # ── 2. RCN gap (transakcje notarialne) ─────────────────────────
+    # 2. RCN gap (transakcje notarialne)
     txn_gap = transaction_gap_ratio(listing, rcn_benchmark)
     txn_gap_pos = max(0.0, txn_gap)
 
-    # ── 3. Pozycja rynkowa ─────────────────────────────────────────
+    # 3. Pozycja rynkowa
     market_pos = max(0.0, market_position(listing, averages) or 0.0)
 
-    # ── 4. Świeżość ogłoszenia ─────────────────────────────────────
-    freshness = 1.0 if listing.get("days_on_market", 0) < 1 else 0.0
+    # 4. Świeżość
+    freshness = 1.0 if (listing.get("days_on_market") or 0) < 1 else 0.0
 
-    # ── 5. Oferta bezpośrednia ─────────────────────────────────────
+    # 5. Bezpośrednia
     direct = 1.0 if listing.get("direct_offer") else 0.0
 
-    # ── 6. AI komponenty (opcjonalne) ──────────────────────────────
-    raw_text_score = listing.get("text_score")
-    raw_photo_score = listing.get("photo_score")
-    has_text_ai = raw_text_score is not None and float(raw_text_score) > 0
-    has_photo_ai = raw_photo_score is not None and float(raw_photo_score) > 0
-    text_score = float(raw_text_score or 0)
-    photo_score = float(raw_photo_score or 0)
+    # 6. AI komponenty (opcjonalne)
+    raw_text = listing.get("text_score")
+    raw_photo = listing.get("photo_score")
+    has_text = raw_text is not None and float(raw_text) > 0
+    has_photo = raw_photo is not None and float(raw_photo) > 0
+    text_score = float(raw_text or 0)
+    photo_score = float(raw_photo or 0)
 
-    # ── 7. Wzrost wartości (CAGR) ──────────────────────────────────
+    # 7. Wzrost wartości rynku
     growth_bonus = value_growth_bonus(cagr)
 
-    # ── 8. Mnożnik stanu technicznego ──────────────────────────────
-    condition_mult = {
-        "nowy": 1.00, "dobry": 0.95,
-        "sredni": 0.85, "remont": 0.70,
-    }
+    # 8. Mnożnik stanu technicznego
     cond = str(listing.get("condition") or "").lower()
     if "now" in cond:
         mult = 1.00
@@ -166,25 +158,19 @@ def opportunity_score(
     else:
         mult = 0.92  # nieznany stan — lekko ostrożnie
 
-    # ── 9. Obliczenie bazowego score bez AI ───────────────────────
-    # Wagi bazowe sumują się do 1.0
-    base_score = (
-        price_gap    * 0.35 +
-        txn_gap_pos  * 0.30 +
-        market_pos   * 0.15 +
-        freshness    * 0.12 +
-        direct       * 0.08
+    # Wynik bazowy
+    base = (
+        price_gap    * 0.35
+        + txn_gap_pos * 0.30
+        + market_pos  * 0.15
+        + freshness   * 0.12
+        + direct      * 0.08
     ) * mult + growth_bonus
 
-    # ── 10. AI boost — addytywny, nie zastępuje ───────────────────
-    # Każdy komponent AI dodaje do 10% wartości bazowej
-    # Cel: oferta z AI > oferta bez AI gdy jakość porównywalna
-    if has_text_ai:
-        # text_score 0-1 → boost 0-8%
-        base_score += text_score * 0.08
+    # AI boost
+    if has_text:
+        base += text_score * 0.08
+    if has_photo:
+        base += photo_score * 0.05
 
-    if has_photo_ai:
-        # photo_score 0-1 → boost 0-5%
-        base_score += photo_score * 0.05
-
-    return round(min(max(base_score, 0.0), 1.0), 4)
+    return round(min(max(base, 0.0), 1.0), 4)
