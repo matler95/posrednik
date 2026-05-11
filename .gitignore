@@ -3,3 +3,16 @@ wrei/backend/__pycache__/*
 wrei/backend/*.pyc
 wrei/backend/debug_raw.html
 */__pycache__/
+wrei/backend/nlp/__pycache__/__init__.cpython-312.pyc
+wrei/backend/nlp/__pycache__/llm_scorer.cpython-312.pyc
+wrei/backend/scrapers/__pycache__/__init__.cpython-312.pyc
+wrei/backend/scrapers/__pycache__/domiporta.cpython-312.pyc
+wrei/backend/scrapers/__pycache__/gratka.cpython-312.pyc
+wrei/backend/scrapers/__pycache__/morizon.cpython-312.pyc
+wrei/backend/scrapers/__pycache__/nieruchomosci_online.cpython-312.pyc
+wrei/backend/scrapers/__pycache__/olx.cpython-312.pyc
+wrei/backend/scrapers/__pycache__/otodom.cpython-312.pyc
+wrei/backend/market/__pycache__/__init__.cpython-312.pyc
+wrei/backend/market/__pycache__/trend_analyzer.cpython-312.pyc
+wrei/backend/nlp/__pycache__/extractor.cpython-312.pyc
+wrei/backend/scrapers/__pycache__/deweloperuch.cpython-312.pyc
