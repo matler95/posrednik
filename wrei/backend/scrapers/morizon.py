@@ -55,42 +55,29 @@ def extract_listings_from_html(html):
     soup = BeautifulSoup(html, "lxml")
     listings = []
 
-    # Morizon listings are in divs with class containing "property"
-    properties = soup.find_all("div", class_=re.compile(r"property"))
+    # Morizon listings are often in <section> or <article> with specific classes
+    properties = soup.find_all(["section", "article"], class_=re.compile(r"Box"))
+    if not properties:
+        # Fallback to older search
+        properties = soup.select("div[class*='property']")
+
     for prop in properties:
         try:
             # Title
-            title_elem = prop.find("h3", class_="propertyTitle")
+            title_elem = prop.find(["h2", "h3"])
             title = title_elem.get_text(strip=True) if title_elem else "Bez tytułu"
 
             # Price
-            price_elem = prop.find("span", class_="price")
+            price_elem = prop.find("p", class_=re.compile(r"Price")) or prop.find("span", class_="price")
             price_text = price_elem.get_text(strip=True) if price_elem else ""
             price = extract_price(price_text)
 
             # Area
-            area_elem = prop.find("span", class_="area")
+            area_text = prop.get_text(" ", strip=True)
             area = None
-            if area_elem:
-                area_text = area_elem.get_text(strip=True)
-                area_match = re.search(r"(\d+(?:,\d+)?)\s*m²", area_text)
-                if area_match:
-                    area = float(area_match.group(1).replace(",", "."))
-
-            # Rooms
-            rooms_elem = prop.find("span", class_="rooms")
-            rooms = None
-            if rooms_elem:
-                rooms_text = rooms_elem.get_text(strip=True)
-                rooms_match = re.search(r"(\d+)\s*pok", rooms_text, re.I)
-                if rooms_match:
-                    rooms = int(rooms_match.group(1))
-
-            # District
-            district_elem = prop.find("span", class_="location")
-            district = "Warszawa"
-            if district_elem:
-                district = district_elem.get_text(strip=True)
+            area_match = re.search(r"(\d+(?:[.,]\d+)?)\s*m²", area_text)
+            if area_match:
+                area = float(area_match.group(1).replace(",", "."))
 
             # URL
             link_elem = prop.find("a", href=True)
@@ -98,25 +85,21 @@ def extract_listings_from_html(html):
             if url.startswith("/"):
                 url = f"https://www.morizon.pl{url}"
 
-            # Direct offer - Morizon often has direct offers, check title or assume
-            direct_offer = "bezpośrednio" in title.lower() or "właściciel" in title.lower()
-
-            if price and area:
+            if price:
                 listings.append({
                     "title": title,
                     "price": price,
                     "area": area,
-                    "rooms": rooms,
-                    "district": district,
+                    "district": "Warszawa", # Fallback
                     "url": url,
-                    "direct_offer": direct_offer,
                     "source": "morizon",
+                    "portal": "morizon",
                 })
         except Exception as e:
-            print(f"Error parsing Morizon listing: {e}")
             continue
 
     return listings
+
 
 
 def extract_price(price_text):

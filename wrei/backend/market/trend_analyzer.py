@@ -11,75 +11,67 @@ logger = logging.getLogger(__name__)
 def get_rcn_benchmark(
     city_slug: str,
     district: str | None = None,
-    rooms: int | None = None,
+    rooms: int | str | None = None,
+    area: float | None = None,
     last_quarters: int = 2,
 ) -> float | None:
-    """
-    Zwraca medianę ceny/m² z danych transakcyjnych RCN
-    dla zadanego miasta i dzielnicy (opcjonalnie) z ostatnich N kwartałów.
+    # Normalizacja pokoi
+    if isinstance(rooms, str):
+        mapping = {"ONE": 1, "TWO": 2, "THREE": 3, "FOUR": 4, "FIVE": 5}
+        rooms = mapping.get(rooms.upper(), 1) if not rooms.isdigit() else int(rooms)
 
-    Fallback: jeśli brak danych dla dzielnicy → cały city; brak RCN → None.
-    """
     from backend.db import get_conn
-
     conn = get_conn()
     cur = conn.cursor()
 
     # Wyznacz zakres kwartałów
-    cur.execute("""
-        SELECT MAX(year), MAX(quarter)
-        FROM transaction_prices
-        WHERE city_slug = %s
-    """, (city_slug,))
+    cur.execute("SELECT MAX(year), MAX(quarter) FROM transaction_prices WHERE city_slug = %s", (city_slug,))
     row = cur.fetchone()
     if not row or not row[0]:
-        cur.close(); conn.close()
-        return None
-
+        cur.close(); conn.close(); return None
+    
     max_year, max_qtr = row
-
-    # Generuj listę (year, quarter) wstecz od max
     quarters = []
     y, q = max_year, max_qtr
     for _ in range(last_quarters):
         quarters.append((y, q))
         q -= 1
-        if q == 0:
-            q = 4; y -= 1
-
-    # Buduj WHERE
+        if q == 0: q = 4; y -= 1
+    
     qtr_cond = " OR ".join(["(year=%s AND quarter=%s)"] * len(quarters))
     params = [p for pair in quarters for p in pair]
 
     def _fetch(extra_where: str, extra_params: list) -> float | None:
         where = f"city_slug = %s AND is_flipped = FALSE AND ({qtr_cond})"
         all_params = [city_slug] + params + extra_params
-        if extra_where:
-            where += f" AND {extra_where}"
-        cur.execute(f"""
-            SELECT amount_sqm
-            FROM transaction_prices
-            WHERE {where}
-            ORDER BY creation_date DESC
-        """, all_params)
-        values = [r[0] for r in cur.fetchall() if r[0] and r[0] > 1000]
-        if len(values) >= 5:
-            return round(median(values), 2)
+        if extra_where: where += f" AND {extra_where}"
+        cur.execute(f"SELECT amount_sqm FROM transaction_prices WHERE {where} AND amount_sqm > 1000", all_params)
+        values = [r[0] for r in cur.fetchall()]
+        if len(values) >= 5: return round(median(values), 2)
         return None
 
-    # Próba z dzielnicą + pokojami
+    # Strategia: od najbardziej szczegółowej do ogólnej
     result = None
-    if district and rooms:
+    # 1. Dzielnica + Pokoje + Metraż (+/- 15%)
+    if district and rooms and area:
+        result = _fetch("district = %s AND rooms_number = %s AND area BETWEEN %s AND %s", 
+                        [district, rooms, area * 0.85, area * 1.15])
+    # 2. Dzielnica + Metraż
+    if result is None and district and area:
+        result = _fetch("district = %s AND area BETWEEN %s AND %s", [district, area * 0.85, area * 1.15])
+    # 3. Dzielnica + Pokoje
+    if result is None and district and rooms:
         result = _fetch("district = %s AND rooms_number = %s", [district, rooms])
+    # 4. Sama dzielnica
     if result is None and district:
         result = _fetch("district = %s", [district])
-    if result is None and rooms:
-        result = _fetch("rooms_number = %s", [rooms])
-    if result is None:
-        result = _fetch("", [])
-
+    # 5. Całe miasto + Metraż
+    if result is None and area:
+        result = _fetch("area BETWEEN %s AND %s", [area * 0.85, area * 1.15])
+    
     cur.close(); conn.close()
     return result
+
 
 
 def compute_cagr(

@@ -188,8 +188,15 @@ def save_listings(listings: list[dict]):
     conn = get_conn()
     cur = conn.cursor()
 
-    records = []
+    # Deduplikacja wewnątrz paczki (żeby ON CONFLICT nie wywalał błędu)
+    unique_listings = {}
     for l in listings:
+        if l.get("url"):
+            unique_listings[l["url"]] = l
+    
+    records = []
+    for l in unique_listings.values():
+
         records.append((
             l.get("portal"),
             l.get("title"),

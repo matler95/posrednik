@@ -56,73 +56,24 @@ def extract_listings_from_html(html: str) -> list[dict]:
     soup = BeautifulSoup(html, "lxml")
     listings = []
 
-    # Gratka używa <article class="offer-item"> lub <article class="listing__item">
-    # UWAGA: może wymagać korekty selektora po pierwszym uruchomieniu
-    cards = soup.find_all("article", class_=re.compile(r"offer-item|listing__item|article-offer"))
-    if not cards:
-        # fallback — szukaj po data-id
-        cards = soup.find_all("article", attrs={"data-id": True})
-    if not cards:
-        cards = soup.find_all("div", class_=re.compile(r"offer-item|listing__item"))
-
+    # Gratka often uses article tags for offers
+    cards = soup.find_all("article")
     for card in cards:
         try:
-            # Tytuł
-            title_elem = (
-                card.find("h2", class_=re.compile(r"title|name|heading"))
-                or card.find("h3", class_=re.compile(r"title|name|heading"))
-                or card.find("a", class_=re.compile(r"title|name"))
-            )
-            title = title_elem.get_text(strip=True) if title_elem else "Bez tytułu"
-
-            # URL
+            # URL i Tytuł
             link = card.find("a", href=re.compile(r"/nieruchomosci/"))
-            url = link["href"] if link else ""
-            if url.startswith("/"):
-                url = f"https://gratka.pl{url}"
+            if not link: continue
+            url = link["href"]
+            if url.startswith("/"): url = f"https://gratka.pl{url}"
+            title = link.get_text(strip=True)
 
             # Cena
             price_elem = card.find(class_=re.compile(r"price|cena"))
-            price = extract_price(price_elem.get_text(strip=True)) if price_elem else None
+            price_text = price_elem.get_text(strip=True) if price_elem else ""
+            price = extract_price(price_text)
 
             # Metraż
-            area = None
-            params_elem = card.find(class_=re.compile(r"params|details|features|parameters"))
-            if params_elem:
-                area = extract_area(params_elem.get_text())
-            if area is None:
-                area = extract_area(card.get_text())
-
-            # Pokoje
-            rooms_val = None
-            card_text = card.get_text()
-            rooms_match = re.search(r"(\d+)\s*pok", card_text, re.IGNORECASE)
-            if rooms_match:
-                rooms_val = int(rooms_match.group(1))
-
-            # Dzielnica z lokalizacji
-            location_elem = card.find(class_=re.compile(r"location|address|place|lokalizacja"))
-            district = "Warszawa"
-            if location_elem:
-                loc_text = location_elem.get_text(strip=True)
-                # "Warszawa, Mokotów" → "Mokotów"
-                parts = re.split(r"[,–\-]", loc_text)
-                if len(parts) >= 2:
-                    district = parts[-1].strip()
-                elif parts:
-                    district = parts[0].strip()
-
-            # Bezpośredni — brak słów agencja/biuro + sprawdzenie tytułu
-            text_lower = card_text.lower()
-            direct_offer = (
-                "bezpośrednio" in text_lower
-                or "właściciel" in text_lower
-                or "prywatny" in text_lower
-            ) and not any(x in text_lower for x in ["biuro", "agencja", "pośrednik"])
-
-            # Zdjęcia
-            images = [img["src"] for img in card.find_all("img", src=True)
-                      if "logo" not in img.get("src", "").lower()][:5]
+            area = extract_area(card.get_text())
 
             if price:
                 listings.append({
@@ -130,18 +81,15 @@ def extract_listings_from_html(html: str) -> list[dict]:
                     "title": title,
                     "price": price,
                     "area": area,
-                    "rooms": rooms_val,
-                    "district": district,
+                    "district": "Warszawa",
                     "url": url,
-                    "direct_offer": direct_offer,
                     "source": "gratka",
-                    "images": images,
                 })
-        except Exception as e:
-            print(f"[Gratka] Błąd parsowania karty: {e}")
+        except:
             continue
 
     return listings
+
 
 
 def search(

@@ -27,20 +27,19 @@ def build_otodom_url(
 ):
     params = {}
     if min_price is not None:
-        params["search[filter_float_price:from]"] = str(min_price)
+        params["priceMin"] = str(min_price)
     if max_price is not None:
-        params["search[filter_float_price:to]"] = str(max_price)
+        params["priceMax"] = str(max_price)
     if min_area is not None:
-        params["search[filter_float_area:from]"] = str(min_area)
+        params["areaMin"] = str(min_area)
     if max_area is not None:
-        params["search[filter_float_area:to]"] = str(max_area)
+        params["areaMax"] = str(max_area)
     if rooms:
-        if isinstance(rooms, str) and "," in rooms:
-            params["search[filter_enum_rooms_num]"] = rooms
-        elif isinstance(rooms, str) and rooms.isdigit():
-            params["search[filter_enum_rooms_num]"] = rooms
-        elif isinstance(rooms, int):
-            params["search[filter_enum_rooms_num]"] = str(rooms)
+        mapping = {"1": "ONE", "2": "TWO", "3": "THREE", "4": "FOUR", "5": "FIVE"}
+        r_val = mapping.get(str(rooms), "ONE")
+        params["roomsNumber"] = f"[{r_val}]"
+
+
     if page and page > 1:
         params["page"] = str(page)
 
@@ -111,8 +110,8 @@ def normalize_listing(item, source_url):
                 images.append(url_img)
 
     # Detekcja oferty bezpośredniej
-    advert_type = item.get("advertType", "")
-    direct_offer = str(advert_type).upper() == "PRIVATE"
+    direct_offer = item.get("isPrivateOwner", False)
+
 
     return {
         "portal": "otodom",
@@ -179,6 +178,8 @@ def search(
             if not page_listings:
                 break
             listings.extend(page_listings)
+
+
 
     return apply_filters(
         listings,

@@ -160,10 +160,12 @@ def search(
         html = fetch_html(url)
         if not html:
             break
-        listings = extract_listings_from_html(html)
-        if not listings:
+        page_listings = extract_listings_from_html(html)
+        if not page_listings:
             break
-        all_listings.extend(listings)
+            
+        # Zapisujemy wszystko co pobralismy, nie filtrujemy agresywnie na tym etapie
+        all_listings.extend(page_listings)
 
     return apply_filters(
         all_listings,
@@ -171,3 +173,4 @@ def search(
         min_area=min_area, max_area=max_area,
         rooms=rooms, direct_only=direct_only,
     )
+

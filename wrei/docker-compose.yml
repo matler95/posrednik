@@ -44,10 +44,15 @@ services:
       dockerfile: dashboard/Dockerfile
     ports:
       - "8501:8501"
-    depends_on:
-      - backend
+    volumes:
+      - ./dashboard:/app/dashboard
     environment:
       BACKEND_URL: http://backend:8000
+      STREAMLIT_SERVER_FILE_WATCHER_TYPE: poll
+    extra_hosts:
+
+      - "host.docker.internal:host-gateway"
+
 
 volumes:
   pgdata:

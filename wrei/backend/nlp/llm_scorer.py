@@ -119,18 +119,25 @@ async def process_llm_queue():
     from backend.db import get_listings_for_llm_analysis, save_llm_analysis
     import asyncio
     
-    listings = get_listings_for_llm_analysis(limit=5)
-    if not listings:
-        logger.info("[LLM] Brak nowych ofert do analizy.")
-        return
-        
-    logger.info(f"Rozpoczynam analizę LLM dla {len(listings)} ofert.")
-    for listing in listings:
-        analysis = await analyze_listing_with_llm(listing)
-        if analysis:
-            save_llm_analysis(listing["url"], analysis)
-            logger.info(f"[LLM] Przeanalizowano pomyslnie: {listing.get('title')}")
-        else:
-            save_llm_analysis(listing["url"], {"error": "failed"})
+    while True:
+        listings = get_listings_for_llm_analysis(limit=5)
+        if not listings:
+            # logger.info("[LLM] Kolejka pusta. Czekam 30s...")
+            await asyncio.sleep(30)
+            continue
             
-        await asyncio.sleep(2)
+        logger.info(f"[LLM] Analiza paczki {len(listings)} ofert (z {len(listings)} w kolejce).")
+        for listing in listings:
+            try:
+                analysis = await analyze_listing_with_llm(listing)
+                if analysis:
+                    save_llm_analysis(listing["url"], analysis)
+                    logger.info(f"[LLM] Przeanalizowano: {listing.get('title')[:40]}...")
+                else:
+                    # Oznacz jako błąd, żeby nie próbować w kółko tego samego
+                    save_llm_analysis(listing["url"], {"error": "timeout_or_parse_fail"})
+            except Exception as e:
+                logger.error(f"[LLM] Blad krytyczny petli: {e}")
+            
+            await asyncio.sleep(1) # Chwila oddechu dla Ollama
+

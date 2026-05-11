@@ -47,12 +47,17 @@ st.markdown("""
 # Helpers
 # ─────────────────────────────────────────────
 @st.cache_data(ttl=300)
-def fetch_listings(limit=200, min_score=None, portal=None, district=None, direct_only=False):
+def fetch_listings(limit=200, min_score=None, portal=None, district=None, direct_only=False, 
+                   min_price=None, max_price=None, min_area=None, max_area=None):
     params = {"limit": limit}
     if min_score:   params["min_score"] = min_score
     if portal:      params["portal"] = portal
     if district:    params["district"] = district
     if direct_only: params["direct_only"] = "true"
+    if min_price:   params["min_price"] = min_price
+    if max_price:   params["max_price"] = max_price
+    if min_area:    params["min_area"] = min_area
+    if max_area:    params["max_area"] = max_area
     try:
         r = requests.get(f"{BACKEND}/listings", params=params, timeout=10)
         return r.json().get("listings", [])
@@ -103,39 +108,81 @@ with st.sidebar:
     st.divider()
 
     city_slug = st.selectbox("Miasto", ["warszawa", "krakow", "wroclaw", "poznan", "gdansk"],
-                              index=0, format_func=str.title)
+                               index=0, format_func=str.title)
     
-    st.subheader("Filtry Ofert")
-    min_score = st.slider("Min. Score", 0.0, 1.0, 0.10, 0.05)
+    st.subheader("🎯 Celowane Polowanie")
+    f_min_price = st.number_input("Cena od (PLN)", value=0, step=10000)
+    f_max_price = st.number_input("Cena do (PLN)", value=1000000, step=10000)
     
-    col_p1, col_p2 = st.columns(2)
-    with col_p1:
-        f_min_price = st.number_input("Cena od (k)", value=0, step=50) * 1000
-    with col_p2:
-        f_max_price = st.number_input("Cena do (k)", value=5000, step=50) * 1000
-        
-    col_a1, col_a2 = st.columns(2)
-    with col_a1:
-        f_min_area = st.number_input("Metraż od", value=0, step=5)
-    with col_a2:
-        f_max_area = st.number_input("Metraż do", value=200, step=5)
+    st.divider()
+    f_min_area = st.number_input("Metraż od (m²)", value=0, step=5)
+    f_max_area = st.number_input("Metraż do (m²)", value=200, step=5)
 
+
+    min_score = st.slider("Min. Score (atrakcyjność)", 0.0, 1.0, 0.10, 0.05)
     direct_only = st.toggle("Tylko bezpośrednie", value=False)
-    show_limit = st.slider("Liczba ofert", 10, 500, 100, 10)
+    show_limit = st.slider("Liczba ofert na liście", 10, 500, 100, 10)
+
+    st.divider()
+    if st.button("🚀 CELOWANE POLOWANIE", type="primary", use_container_width=True):
+        try:
+            params = {
+                "portals": "otodom,olx,morizon,gratka,domiporta,nieruchomosci_online",
+                "pages": 10,
+                "city_slug": city_slug,
+                "min_price": f_min_price,
+                "max_price": f_max_price,
+                "min_area": f_min_area,
+                "max_area": f_max_area,
+                "direct_only": "true" if direct_only else "false"
+            }
+            with st.spinner("Uruchamiam celowane skanowanie..."):
+                r = requests.post(f"{BACKEND}/run-crawl", params=params, timeout=30)
+                st.success("🚀 Celowane polowanie uruchomione w tle!")
+        except Exception as e:
+            st.error(f"Błąd: {e}")
+
+    if st.button("🌍 PEŁNY SKAN RYNKU", use_container_width=True):
+        try:
+            params = {
+                "portals": "otodom,olx,morizon,gratka,domiporta,nieruchomosci_online",
+                "pages": 20,
+                "city_slug": city_slug
+            }
+            with st.spinner("Uruchamiam pełne skanowanie rynku..."):
+                r = requests.post(f"{BACKEND}/run-crawl", params=params, timeout=30)
+                st.success("🌍 Pełny skan rynku (ok. 3000 ofert) wystartował w tle!")
+        except Exception as e:
+            st.error(f"Błąd: {e}")
+
+
+    st.divider()
+    st.subheader("⚙️ Status Systemu")
+    try:
+        stats = requests.get(f"{BACKEND}/stats", timeout=2).json()
+        st.success("Połączono z AI")
+        st.caption(f"Baza: {stats['total']} ofert")
+        if stats['pending_llm'] > 0:
+            st.warning(f"Analiza tekstu: {stats['pending_llm']} w kolejce")
+        else:
+            st.success("Teksty przeanalizowane")
+            
+        if stats['pending_photo'] > 0:
+            st.warning(f"Analiza zdjęć: {stats['pending_photo']} w kolejce")
+        else:
+            st.success("Zdjęcia przeanalizowane")
+    except:
+        st.error("Błąd połączenia z mózgiem AI")
+
 
     st.divider()
     page = st.radio("Widok", ["📊 Trendy RCN", "🏆 Okazje", "🗺️ Mapa", "🔔 Alerty"])
 
-    st.divider()
-    if st.button("🔄 Odśwież dane", use_container_width=True):
-        st.cache_data.clear()
 
-    if st.button("🕷️ Uruchom crawl", use_container_width=True):
-        try:
-            r = requests.post(f"{BACKEND}/run-crawl?portals=otodom,olx&pages=2", timeout=30)
-            st.success(f"Zapisano {r.json().get('saved', 0)} ofert")
-        except Exception as e:
-            st.error(str(e))
+    st.divider()
+    if st.button("🔄 Odśwież widok", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
 
     if st.button("📥 Załaduj dane RCN (30 dni)", use_container_width=True):
         try:
@@ -171,7 +218,7 @@ if page == "📊 Trendy RCN":
         else:
             st.metric("Ofertowe vs RCN", "brak danych")
     with col4:
-        listings_count = len(fetch_listings(limit=1, min_score=0))
+        listings_count = len(fetch_listings(limit=1))
         st.metric("Ofert w DB", listings_count)
 
     # Trend chart
@@ -195,12 +242,6 @@ if page == "📊 Trendy RCN":
             hovermode="x unified",
         )
         st.plotly_chart(fig, use_container_width=True)
-
-        # Tabela
-        with st.expander("Dane kwartalne"):
-            st.dataframe(df_q[["label", "median_sqm", "count"]].rename(columns={
-                "label": "Kwartał", "median_sqm": "Mediana PLN/m²", "count": "Transakcji"
-            }), use_container_width=True)
     else:
         st.info("Brak danych RCN. Kliknij '📥 Załaduj dane RCN' w sidebarze.")
 
@@ -217,49 +258,27 @@ elif page == "🏆 Okazje":
         min_area=f_min_area, max_area=f_max_area
     )
     if not listings:
-        st.warning("Brak ofert. Uruchom crawl lub obniż próg score.")
+        st.warning("Brak ofert spełniających te kryteria w bazie. Kliknij '🚀 SZUKAJ NOWYCH OKAZJI', aby je pobrać.")
         st.stop()
 
     df = pd.DataFrame(listings)
     df["score"] = df["score"].fillna(0)
     df_sorted = df.sort_values("score", ascending=False)
 
-    # Histogram
+    # Histogram i statystyki
     col1, col2 = st.columns([2, 1])
     with col1:
         fig_hist = px.histogram(df_sorted, x="score", nbins=20, color_discrete_sequence=["#74c0fc"],
-                                title="Rozkład Score", labels={"score": "Score"})
-        fig_hist.update_layout(plot_bgcolor="#1e2130", paper_bgcolor="#1e2130",
-                                font=dict(color="white"), showlegend=False)
+                                title="Rozkład Score dla wyników wyszukiwania")
+        fig_hist.update_layout(plot_bgcolor="#1e2130", paper_bgcolor="#1e2130", font=dict(color="white"))
         st.plotly_chart(fig_hist, use_container_width=True)
 
     with col2:
-        st.metric("Łącznie ofert", len(df_sorted))
+        st.metric("Pasujących ofert", len(df_sorted))
         st.metric("Śr. Score", f"{df_sorted['score'].mean()*100:.1f}%")
-        if "price_per_m2" in df_sorted.columns:
-            st.metric("Śr. cena/m²", f"{df_sorted['price_per_m2'].mean():,.0f} PLN")
-        if "rcn_benchmark" in df_sorted.columns:
-            rcn_vals = df_sorted["rcn_benchmark"].dropna()
-            if not rcn_vals.empty:
-                st.metric("Mediana RCN (oferty)", f"{rcn_vals.mean():,.0f} PLN/m²")
-
-    # Scatter: cena vs score
-    if "price_per_m2" in df_sorted.columns and "district" in df_sorted.columns:
-        fig_sc = px.scatter(
-            df_sorted.dropna(subset=["price_per_m2", "score"]),
-            x="price_per_m2", y="score",
-            color="district", size="area",
-            hover_data=["title", "price", "rooms", "portal"],
-            title="Cena/m² vs Score (wielkość = metraż)",
-            labels={"price_per_m2": "PLN/m²", "score": "Score"},
-            color_discrete_sequence=px.colors.qualitative.Plotly,
-        )
-        fig_sc.update_layout(plot_bgcolor="#1e2130", paper_bgcolor="#1e2130",
-                             font=dict(color="white"))
-        st.plotly_chart(fig_sc, use_container_width=True)
 
     # Karty okazji
-    st.subheader(f"Top {min(10, len(df_sorted))} okazji")
+    st.subheader(f"Top {min(10, len(df_sorted))} okazji w Twoich widełkach")
     for _, row in df_sorted.head(10).iterrows():
         score = row.get("score", 0)
         rcn = row.get("rcn_benchmark")
@@ -307,7 +326,6 @@ elif page == "🏆 Okazje":
 """, unsafe_allow_html=True)
 
 
-
 # ─────────────────────────────────────────────
 # Strona: Mapa
 # ─────────────────────────────────────────────
@@ -324,10 +342,8 @@ elif page == "🗺️ Mapa":
         )
         df = pd.DataFrame(listings)
 
-        # Punkty z koordynatami (jeśli geocoder je dostarczył)
         if "lat" not in df.columns or df["lat"].isna().all():
-            st.info("Brak danych geograficznych. Geocoder przypisuje dzielnice asynchronicznie — sprawdź ponownie za chwilę.")
-            # Fallback: centrum Warszawy per dzielnica
+            st.info("Brak danych geograficznych. Fallback: środek dzielnicy.")
             DISTRICT_COORDS = {
                 "Śródmieście": (52.2297, 21.0122), "Mokotów": (52.1945, 21.0273),
                 "Wola": (52.2382, 20.9785), "Praga Południe": (52.2395, 21.0621),
@@ -342,33 +358,23 @@ elif page == "🗺️ Mapa":
 
         df = df.dropna(subset=["lat", "lon"])
         if df.empty:
-            st.warning("Brak ofert do wyświetlenia na mapie.")
+            st.warning("Brak ofert do wyświetlenia na mapie dla tych filtrów.")
             st.stop()
 
-        m = folium.Map(location=[52.23, 21.01], zoom_start=12,
-                       tiles="CartoDB dark_matter")
-
+        m = folium.Map(location=[52.23, 21.01], zoom_start=12, tiles="CartoDB dark_matter")
         for _, row in df.iterrows():
             score = row.get("score") or 0
             color = "#51cf66" if score >= 0.25 else ("#ffd43b" if score >= 0.15 else "#ff6b6b")
-            popup_text = (
-                f"<b>{row.get('title','?')[:60]}</b><br>"
-                f"💰 {row.get('price',0):,} PLN | {row.get('price_per_m2',0):,.0f} PLN/m²<br>"
-                f"⭐ Score: {round(score*100)}%<br>"
-                f'<a href="{row.get("url","#")}" target="_blank">→ Otwórz</a>'
-            )
             folium.CircleMarker(
-                location=[row["lat"], row["lon"]],
-                radius=8 + score * 10,
+                location=[row["lat"], row["lon"]], radius=8 + score * 10,
                 color=color, fill=True, fill_color=color, fill_opacity=0.8,
-                popup=folium.Popup(popup_text, max_width=300),
+                popup=f"<b>{row.get('title','?')[:60]}</b><br>💰 {row.get('price',0):,} PLN",
                 tooltip=f"Score: {round(score*100)}%",
             ).add_to(m)
 
         st_folium(m, use_container_width=True, height=600)
-
-    except ImportError:
-        st.error("Zainstaluj: `pip install folium streamlit-folium`")
+    except Exception as e:
+        st.error(f"Błąd mapy: {e}")
 
 
 # ─────────────────────────────────────────────
@@ -376,31 +382,14 @@ elif page == "🗺️ Mapa":
 # ─────────────────────────────────────────────
 elif page == "🔔 Alerty":
     st.title("🔔 Zarządzanie Alertami")
-
     try:
         from backend.alerts.evaluator import get_watchlist_alerts
         alerts = get_watchlist_alerts()
-
         if alerts:
-            st.subheader(f"Aktywne alerty ({len(alerts)})")
             for a in alerts:
                 with st.expander(f"{'🟢' if a['active'] else '🔴'} {a['name']}"):
                     st.code(a.get("condition_expr") or "(brak warunku)", language="python")
-                    st.caption(f"Min. score: {a.get('min_score', 0.15)} | Miasto: {a.get('city_slug', 'warszawa')}")
         else:
-            st.info("Brak alertów. Dodaj przez API lub bezpośrednio do tabeli `watchlist` w DB.")
-
-        st.divider()
-        st.subheader("Przykładowe warunki alertów")
-        examples = {
-            "Okazja Mokotów": "score > 0.25 and district == 'Mokotów'",
-            "RCN poniżej rynku": "transaction_gap > 0.10",
-            "Bezpośrednia + tania": "direct_offer == True and price_per_m2 < 13000",
-            "Rynek rosnący": "cagr_5y > 0.07 and score > 0.20",
-        }
-        for name, expr in examples.items():
-            st.code(f"# {name}\n{expr}", language="python")
-
+            st.info("Brak aktywnych alertów.")
     except Exception as e:
-        st.error(f"Błąd połączenia z backendem: {e}")
-        st.info("Upewnij się że `docker-compose up -d` jest uruchomiony.")
+        st.error(f"Błąd: {e}")
