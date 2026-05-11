@@ -27,32 +27,37 @@ def search(
     min_price=None, max_price=None,
     min_area=None, max_area=None,
     rooms=None, pages=1, direct_only=False,
+    districts=None
 ):
     selected_portals = normalize_portals(portals)
     all_listings = []
+    
+    districts_to_scan = districts if districts else [None]
     
     for portal in selected_portals:
         scraper = PORTAL_SCRAPERS.get(portal)
         if not scraper: continue
         
-        try:
-            print(f"[HUNTER] Skanuję {portal.upper()} | Lokalizacja: {city_slug.upper()} (Całe miasto)...")
-            listings = scraper(
-                min_price=min_price,
-                max_price=max_price,
-                min_area=min_area,
-                max_area=max_area,
-                rooms=rooms,
-                pages=pages,
-                direct_only=direct_only,
-                district=None # Skanujemy globalnie
-            )
-            if listings:
-                print(f"[HUNTER] {portal.upper()}: Znaleziono {len(listings)} ofert")
-                all_listings.extend(listings)
-        except Exception as e:
-            print(f"[ERR] {portal} błąd: {e}")
-            continue
+        for district in districts_to_scan:
+            try:
+                dist_label = district.upper() if district else "CAŁE MIASTO"
+                print(f"[HUNTER] Skanuję {portal.upper()} | Lokalizacja: {city_slug.upper()} ({dist_label})...")
+                listings = scraper(
+                    min_price=min_price,
+                    max_price=max_price,
+                    min_area=min_area,
+                    max_area=max_area,
+                    rooms=rooms,
+                    pages=pages,
+                    direct_only=direct_only,
+                    district=district
+                )
+                if listings:
+                    print(f"[HUNTER] {portal.upper()} ({dist_label}): Znaleziono {len(listings)} ofert")
+                    all_listings.extend(listings)
+            except Exception as e:
+                print(f"[ERR] {portal} {dist_label} błąd: {e}")
+                continue
 
     return deduplicate_listings(all_listings)
 

@@ -20,7 +20,14 @@ async def startup_event():
     from backend.db import get_conn
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("CREATE TABLE IF NOT EXISTS hunt_config (id INT PRIMARY KEY, max_price INT, max_area INT, city_slug TEXT, updated_at TIMESTAMP)")
+    cur.execute("CREATE TABLE IF NOT EXISTS hunt_config (id INT PRIMARY KEY, config JSONB, updated_at TIMESTAMP)")
+    # Upewnijmy się, że jeśli tabela jest w starym formacie, zostanie przebudowana (prosta migracja)
+    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='hunt_config' AND column_name='max_price'")
+    if cur.fetchone():
+        cur.execute("DROP TABLE hunt_config")
+        cur.execute("CREATE TABLE hunt_config (id INT PRIMARY KEY, config JSONB, updated_at TIMESTAMP)")
+    
+    cur.execute("INSERT INTO hunt_config (id, config, updated_at) VALUES (1, '{}', NOW()) ON CONFLICT DO NOTHING")
     conn.commit()
     cur.close(); conn.close()
     
@@ -87,26 +94,29 @@ def perform_full_crawl_task(params: dict, city_slug: str):
 @app.post("/run-crawl")
 def run_crawl(
     background_tasks: BackgroundTasks,
-    portals: str = Query("otodom,olx,morizon,gratka,domiporta,nieruchomosci_online"),
-    pages: int = Query(1, ge=1, le=100),
-
-    min_price: int | None = Query(None, ge=0),
-    max_price: int | None = Query(None, ge=0),
-    min_area: int | None = Query(None, ge=0),
-    max_area: int | None = Query(None, ge=0),
-    rooms: str | None = Query(None),
-    direct_only: bool = Query(False),
-    city_slug: str = Query("warszawa"),
+    portals: str = Query("otodom"),
+    pages: int = Query(5, ge=1, le=100)
 ):
+    from backend.db import get_conn
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT config FROM hunt_config WHERE id = 1")
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    
+    cfg = row[0] if row and row[0] else {}
+    city_slug = cfg.get("city_slug", "warszawa")
+    
     search_params = {
         "portals": portals,
         "pages": pages,
-        "min_price": min_price,
-        "max_price": max_price,
-        "min_area": min_area,
-        "max_area": max_area,
-        "rooms": rooms,
-        "direct_only": direct_only,
+        "min_price": cfg.get("min_price"),
+        "max_price": cfg.get("max_price"),
+        "min_area": cfg.get("min_area"),
+        "max_area": cfg.get("max_area"),
+        "rooms": None, # Na razie bez rooms, można dorobić
+        "districts": cfg.get("districts", []),
+        "direct_only": False,
     }
     background_tasks.add_task(perform_full_crawl_task, search_params, city_slug)
     return {"status": "started", "message": "Zadanie uruchomione w tle."}
@@ -165,23 +175,34 @@ def ingest_market_data(background_tasks: BackgroundTasks, city_slug: str = "wars
     return {"status": "started", "city_slug": city_slug}
 
 @app.post("/set-hunt-config")
-def set_config(max_price: int, max_area: int, city_slug: str):
+def set_config(config: dict):
     from backend.db import save_hunt_config
-    save_hunt_config(max_price, max_area, city_slug)
+    save_hunt_config(config)
     return {"status": "saved"}
 
 @app.get("/get-hunt-config")
-
 def get_config():
     from backend.db import get_conn
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT max_price, max_area, city_slug FROM hunt_config WHERE id = 1")
+    cur.execute("SELECT config FROM hunt_config WHERE id = 1")
     row = cur.fetchone()
     cur.close(); conn.close()
-    if row:
-        return {"max_price": row[0], "max_area": row[1], "city_slug": row[2]}
-    return {"max_price": 430000, "max_area": 45, "city_slug": "warszawa"}
+    
+    default_cfg = {
+        "min_price": 0, "max_price": 430000, 
+        "min_area": 0, "max_area": 45, 
+        "city_slug": "warszawa", "districts": [], "rooms": []
+    }
+    
+    if row and row[0]:
+        cfg = row[0]
+        # Uzupełnij brakujące klucze domyślnymi wartościami
+        for k, v in default_cfg.items():
+            if k not in cfg:
+                cfg[k] = v
+        return cfg
+    return default_cfg
 
 @app.get("/stats")
 

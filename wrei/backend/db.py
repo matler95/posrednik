@@ -303,18 +303,16 @@ def save_llm_analysis(url: str, analysis: dict):
     conn.close()
 
 
-def save_hunt_config(max_price: int, max_area: int, city_slug: str):
+def save_hunt_config(config_dict: dict):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO hunt_config (id, max_price, max_area, city_slug, updated_at)
-        VALUES (1, %s, %s, %s, NOW())
+        INSERT INTO hunt_config (id, config, updated_at)
+        VALUES (1, %s, NOW())
         ON CONFLICT (id) DO UPDATE SET
-            max_price = EXCLUDED.max_price,
-            max_area = EXCLUDED.max_area,
-            city_slug = EXCLUDED.city_slug,
+            config = EXCLUDED.config,
             updated_at = NOW()
-    """, (max_price, max_area, city_slug))
+    """, (Json(config_dict),))
     conn.commit()
     cur.close()
     conn.close()
@@ -322,15 +320,16 @@ def save_hunt_config(max_price: int, max_area: int, city_slug: str):
 def get_listings_for_llm_analysis(limit: int = 10) -> list[dict]:
     conn = get_conn()
     cur = conn.cursor()
-    # Priorytetyzujemy: 
-    # 1. Oferty pasujące do aktualnego configu polowania
-    # 2. Wysoki score
+    # Priorytetyzujemy oferty dokładnie pasujące do aktualnego configu polowania
     cur.execute("""
-        WITH cfg AS (SELECT max_price, max_area FROM hunt_config WHERE id = 1)
+        WITH cfg AS (SELECT config FROM hunt_config WHERE id = 1)
         SELECT l.* FROM listings l, cfg
         WHERE l.llm_analysis IS NULL
+          AND l.price <= COALESCE((cfg.config->>'max_price')::int, 9999999)
+          AND l.price >= COALESCE((cfg.config->>'min_price')::int, 0)
+          AND l.area <= COALESCE((cfg.config->>'max_area')::numeric, 9999)
+          AND l.area >= COALESCE((cfg.config->>'min_area')::numeric, 0)
         ORDER BY 
-            (l.price <= cfg.max_price AND l.area <= cfg.max_area) DESC,
             l.score DESC NULLS LAST
         LIMIT %s
     """, (limit,))
