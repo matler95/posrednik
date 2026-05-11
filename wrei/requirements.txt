@@ -1,13 +1,34 @@
+# ── Core API ───────────────────────────────────────────────────────────────
 fastapi
 uvicorn[standard]
-streamlit
 psycopg2-binary
-httpx
+httpx[http2]
 tenacity
 requests
+
+# ── Scraping ───────────────────────────────────────────────────────────────
 beautifulsoup4
 lxml
+
+# ── Scheduler ──────────────────────────────────────────────────────────────
 APScheduler
+
+# ── ML / NLP ───────────────────────────────────────────────────────────────
 scikit-learn
 joblib
 spacy
+
+# ── CV (Faza 4) ─────────────────────────────────────────────────────────────
+# transformers    # CLIP pre-filter — odkomentuj kiedy wdrażasz Fazę 4
+# torch           # CPU-only: pip install torch --index-url https://download.pytorch.org/whl/cpu
+# Pillow
+
+# ── Dashboard ──────────────────────────────────────────────────────────────
+streamlit
+pandas
+folium
+streamlit-folium
+plotly
+
+# ── Telegram (Faza 5) ──────────────────────────────────────────────────────
+python-telegram-bot

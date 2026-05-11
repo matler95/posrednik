@@ -101,7 +101,16 @@ def normalize_listing(item, source_url):
     if url.startswith("/"):
         url = f"https://www.otodom.pl{url}"
 
-    # BUG FIX — advertType: "PRIVATE" = bezpośredni, "AGENCY" = biuro
+    # Wyciągnij zdjęcia
+    images_raw = item.get("images", [])
+    images = []
+    if isinstance(images_raw, list):
+        for img in images_raw:
+            url_img = img.get("medium") or img.get("large") or img.get("thumbnail")
+            if url_img:
+                images.append(url_img)
+
+    # Detekcja oferty bezpośredniej
     advert_type = item.get("advertType", "")
     direct_offer = str(advert_type).upper() == "PRIVATE"
 
@@ -119,11 +128,13 @@ def normalize_listing(item, source_url):
         ),
         "url": url or source_url,
         "source": source_url,
-        "portal": "otodom",
-        "direct_offer": direct_offer,   # BUG FIX
+        "direct_offer": direct_offer,
         "raw_location": item.get("location", {}),
         "description": item.get("shortDescription"),
+        "images": images,
     }
+
+
 
 
 def parse_otodom_items(payload, source_url):

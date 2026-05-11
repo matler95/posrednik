@@ -214,6 +214,14 @@ def save_listings(listings: list[dict]):
             l.get("building_type"),
             l.get("ownership"),
             Json(l.get("raw_location") or {}),
+            l.get("rcn_benchmark"),
+            l.get("transaction_gap"),
+            l.get("cagr_5y"),
+            l.get("text_score"),
+            l.get("photo_score"),
+            l.get("city_slug", "warszawa"),
+            l.get("lat"),
+            l.get("lng"),
         ))
 
     execute_values(cur, """
@@ -221,7 +229,9 @@ def save_listings(listings: list[dict]):
             portal, title, price, area, district, rooms, url,
             price_per_m2, estimated_value, score, direct_offer, source,
             description, images, features, floor, total_floors, year_built,
-            heating, condition, building_type, ownership, raw_location
+            heating, condition, building_type, ownership, raw_location,
+            rcn_benchmark, transaction_gap, cagr_5y, text_score, photo_score,
+            city_slug, lat, lng
         ) VALUES %s
         ON CONFLICT (url) DO UPDATE SET
             portal          = EXCLUDED.portal,
@@ -246,9 +256,18 @@ def save_listings(listings: list[dict]):
             building_type   = EXCLUDED.building_type,
             ownership       = EXCLUDED.ownership,
             raw_location    = EXCLUDED.raw_location,
+            rcn_benchmark   = EXCLUDED.rcn_benchmark,
+            transaction_gap = EXCLUDED.transaction_gap,
+            cagr_5y         = EXCLUDED.cagr_5y,
+            text_score      = EXCLUDED.text_score,
+            photo_score     = EXCLUDED.photo_score,
+            city_slug       = EXCLUDED.city_slug,
+            lat             = EXCLUDED.lat,
+            lng             = EXCLUDED.lng,
             days_on_market  = EXTRACT(DAY FROM NOW() - listings.first_seen)::INT,
             updated_at      = NOW()
     """, records)
+
 
     saved = cur.rowcount
     conn.commit()
@@ -442,6 +461,8 @@ def get_listings(
     limit: int = 100, offset: int = 0,
     min_score: float = None, portal: str = None,
     district: str = None, direct_only: bool = False,
+    min_price: int = None, max_price: int = None,
+    min_area: float = None, max_area: float = None,
 ) -> list[dict]:
     conn = get_conn()
     cur = conn.cursor()
@@ -459,6 +480,18 @@ def get_listings(
         params.append(district)
     if direct_only:
         where.append("direct_offer = TRUE")
+    if min_price:
+        where.append("price >= %s")
+        params.append(min_price)
+    if max_price:
+        where.append("price <= %s")
+        params.append(max_price)
+    if min_area:
+        where.append("area >= %s")
+        params.append(min_area)
+    if max_area:
+        where.append("area <= %s")
+        params.append(max_area)
 
     params.extend([limit, offset])
     cur.execute(f"""
@@ -467,6 +500,7 @@ def get_listings(
         ORDER BY score DESC NULLS LAST, created_at DESC
         LIMIT %s OFFSET %s
     """, params)
+
 
     cols = [d[0] for d in cur.description]
     rows = [dict(zip(cols, row)) for row in cur.fetchall()]
@@ -489,3 +523,182 @@ def get_listing_price_history(url: str) -> list[dict]:
     cur.close()
     conn.close()
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Transaction prices (Deweloperuch / RCN)
+# ---------------------------------------------------------------------------
+
+def save_transaction_prices(transactions: list[dict]) -> int:
+    """
+    Zapisuje lub aktualizuje rekordy z RCN (Deweloperuch).
+    Klucz unikalności: sale_rcn_id.
+    """
+    if not transactions:
+        return 0
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    records = [
+        (
+            t["sale_rcn_id"],
+            t["city"],
+            t["city_slug"],
+            t.get("street_address"),
+            t.get("invest_slug"),
+            t.get("district"),
+            t.get("amount"),
+            t.get("amount_sqm"),
+            t.get("size"),
+            t.get("rooms_number"),
+            t.get("floor_number"),
+            t.get("creation_date"),
+            t.get("year"),
+            t.get("quarter"),
+            t.get("month"),
+            bool(t.get("is_flipped", False)),
+        )
+        for t in transactions
+        if t.get("sale_rcn_id") and t.get("amount_sqm")
+    ]
+
+    execute_values(cur, """
+        INSERT INTO transaction_prices
+            (sale_rcn_id, city, city_slug, street_address, invest_slug,
+             district, amount, amount_sqm, size, rooms_number, floor_number,
+             creation_date, year, quarter, month, is_flipped)
+        VALUES %s
+        ON CONFLICT (sale_rcn_id) DO UPDATE SET
+            district       = COALESCE(EXCLUDED.district, transaction_prices.district),
+            street_address = COALESCE(EXCLUDED.street_address, transaction_prices.street_address),
+            scraped_at     = NOW()
+    """, records)
+
+    saved = cur.rowcount
+    conn.commit()
+    cur.close()
+    conn.close()
+    logger.info("[DB] Zapisano %d transakcji RCN.", saved)
+    return saved
+
+
+def update_transaction_district(invest_slug: str, district: str) -> None:
+    """Uzupełnia dzielnicę dla transakcji po geocodingu."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE transaction_prices
+        SET district = %s
+        WHERE invest_slug = %s AND district IS NULL
+    """, (district, invest_slug))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_transactions_without_district(limit: int = 200) -> list[dict]:
+    """Zwraca transakcje bez przypisanej dzielnicy (do geocodowania)."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT DISTINCT invest_slug, street_address, city_slug
+        FROM transaction_prices
+        WHERE district IS NULL AND invest_slug IS NOT NULL
+        LIMIT %s
+    """, (limit,))
+    cols = [d[0] for d in cur.description]
+    rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+    cur.close()
+    conn.close()
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Geocode cache
+# ---------------------------------------------------------------------------
+
+def get_geocode_cache(invest_slugs: list[str]) -> dict[str, dict]:
+    """Zwraca cache geocodingu dla podanych slugów."""
+    if not invest_slugs:
+        return {}
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT invest_slug, district, lat, lng
+        FROM geocode_cache
+        WHERE invest_slug = ANY(%s)
+    """, (invest_slugs,))
+    result = {
+        row[0]: {"district": row[1], "lat": row[2], "lng": row[3]}
+        for row in cur.fetchall()
+    }
+    cur.close()
+    conn.close()
+    return result
+
+
+def save_geocode_cache(invest_slug: str, street_address: str, geo: dict) -> None:
+    """Zapisuje wynik geocodingu do cache."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO geocode_cache (invest_slug, street_address, district, lat, lng)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (invest_slug) DO UPDATE SET
+            district   = EXCLUDED.district,
+            lat        = EXCLUDED.lat,
+            lng        = EXCLUDED.lng,
+            cached_at  = NOW()
+    """, (
+        invest_slug,
+        street_address,
+        geo.get("district"),
+        geo.get("lat"),
+        geo.get("lng"),
+    ))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Photo analysis queue (Faza 4)
+# ---------------------------------------------------------------------------
+
+def get_listings_for_photo_analysis(limit: int = 3) -> list[dict]:
+    """
+    Zwraca oferty z niepustą listą zdjęć, bez analizy photo_analysis,
+    posortowane po score malejąco.
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, url, images, title, district, price, area, rooms
+        FROM listings
+        WHERE photo_analysis IS NULL
+          AND images IS NOT NULL
+          AND jsonb_array_length(images) > 0
+          AND score > 0.08
+        ORDER BY score DESC NULLS LAST
+        LIMIT %s
+    """, (limit,))
+    cols = [d[0] for d in cur.description]
+    rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+    cur.close()
+    conn.close()
+    return rows
+
+
+def save_photo_analysis(listing_id: int, analysis: dict) -> None:
+    """Zapisuje wynik analizy zdjęć do listings.photo_analysis."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE listings
+        SET photo_analysis = %s, updated_at = NOW()
+        WHERE id = %s
+    """, (Json(analysis) if analysis else None, listing_id))
+    conn.commit()
+    cur.close()
+    conn.close()

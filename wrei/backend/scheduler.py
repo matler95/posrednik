@@ -1,3 +1,19 @@
+"""
+Scheduler WREI — kompletny harmonogram zadań.
+Używa APScheduler (BackgroundScheduler) — działa w tle wewnątrz procesu FastAPI.
+
+Harmonogram:
+  - Scrapowanie portali co 6h (otodom, olx, morizon, gratka, domiporta, nieruchomosci_online)
+  - Aktualizacja danych RCN (Deweloperuch) codziennie o 4:00
+  - Geocoding transakcji bez dzielnicy co 2h
+  - Kolejka LLM (Ollama text) co 10 min
+  - Kolejka photo (CLIP + Vision) co 15 min
+  - Generowanie market_stats codziennie o 3:00
+  - Retrain modelu ML co niedzielę o 2:00
+  - Sprawdzanie alertów co 15 min
+  - Dzienny digest Telegram o 8:00
+"""
+import asyncio
 import logging
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -8,63 +24,263 @@ logger = logging.getLogger(__name__)
 
 scheduler = BackgroundScheduler(daemon=True)
 
+# ─────────────────────────────────────────────
+# 1. Scrapowanie portali
+# ─────────────────────────────────────────────
 
-def crawl_all_sources(portals="otodom", pages=1, direct_only=False):
-    logger.info("Rozpoczynam crawl ofert: portals=%s pages=%s direct_only=%s", portals, pages, direct_only)
+ALL_PORTALS = "otodom,olx,morizon,gratka,domiporta,nieruchomosci_online"
+
+def crawl_all_sources(portals: str = ALL_PORTALS, pages: int = 2, direct_only: bool = False):
+    logger.info("[Crawl] Start: portals=%s pages=%s", portals, pages)
     listings = []
     try:
         listings = search(portals=portals, pages=pages, direct_only=direct_only)
         save_listings(listings)
-        run_id = record_scrape_run(portals, pages, direct_only, "completed", len(listings), query_url=None)
-        logger.info("Crawl zakończony: %s ofert zapisanych", len(listings))
-        return run_id
-    except Exception as exc:
-        logger.exception("Błąd podczas crawlowania ofert")
+        record_scrape_run(portals, pages, direct_only, "completed", len(listings), query_url=None)
+        logger.info("[Crawl] Zakończono: %d ofert", len(listings))
+    except Exception:
+        logger.exception("[Crawl] Błąd podczas scrapowania")
         record_scrape_run(portals, pages, direct_only, "failed", len(listings), query_url=None)
-        raise
 
 
-def start_scheduler(interval_minutes=60):
-    init_db()
+# ─────────────────────────────────────────────
+# 2. Dane transakcyjne RCN (Deweloperuch)
+# ─────────────────────────────────────────────
+
+def update_rcn_data(city_slugs: list[str] | None = None, days: int = 30):
+    """Pobiera transakcje RCN z ostatnich N dni i zapisuje do DB."""
+    import os
+    from backend.scrapers.deweloperuch import fetch_recent
+    from backend.db import save_transaction_prices
+
+    cities = city_slugs or [c.strip() for c in os.getenv("TARGET_CITIES", "warszawa").split(",")]
+    for city in cities:
+        try:
+            transactions = fetch_recent(city, days=days, max_pages=100)
+            saved = save_transaction_prices(transactions)
+
+            logger.info("[RCN] %s: zapisano %d transakcji", city, saved)
+        except Exception:
+            logger.exception("[RCN] Błąd dla miasta: %s", city)
     
-    # 1. Scrapowanie
-    scheduler.add_job(
-        crawl_all_sources,
-        "interval",
-        minutes=interval_minutes,
-        args=("otodom", 2, False),
-        id="crawl_all_sources",
-        replace_existing=True,
-    )
-    
-    # 2. Market stats (codziennie o 3:00)
+    # Odśwież statystyki po pobraniu nowych danych
+    update_market_stats()
+
+
+
+def initial_rcn_load(city_slugs: list[str] | None = None, years: int = 5):
+    """Pełne pobieranie historyczne (tylko raz przy starcie jeśli baza pusta)."""
+    import os
+    from backend.scrapers.deweloperuch import fetch_historical
+    from backend.db import save_transaction_prices, get_conn
+
+    cities = city_slugs or [c.strip() for c in os.getenv("TARGET_CITIES", "warszawa").split(",")]
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM transaction_prices")
+    count = cur.fetchone()[0]
+    cur.close(); conn.close()
+
+    if count > 0:
+        logger.info("[RCN] Baza już zawiera %d rekordów — pomijam initial load.", count)
+        return
+
+    logger.info("[RCN] Pusta baza — ładuję historię %d lat...", years)
+    for city in cities:
+        try:
+            transactions = fetch_historical(city, years=years)
+            saved = save_transaction_prices(transactions)
+            logger.info("[RCN] %s: załadowano %d transakcji historycznych", city, saved)
+        except Exception:
+            logger.exception("[RCN] Błąd historical load dla: %s", city)
+
+
+# ─────────────────────────────────────────────
+# 3. Geocoding (adresy → dzielnice)
+# ─────────────────────────────────────────────
+
+def geocode_pending():
+    """Geocoduje transakcje bez przypisanej dzielnicy (batch po 100)."""
+    from backend.db import get_transactions_without_district, update_transaction_district
+    from backend.market.geocoder import geocode_address
+    import time
+
+    pending = get_transactions_without_district(limit=100)
+    if not pending:
+        return
+
+    logger.info("[Geocoder] %d adresów do geocodowania", len(pending))
+    for item in pending:
+        slug = item["invest_slug"]
+        address = item.get("street_address") or slug.replace("-", " ").title()
+        city_slug = item.get("city_slug", "warszawa")
+
+        try:
+            geo = geocode_address(address, city_slug)
+            if geo and geo.get("district"):
+                update_transaction_district(slug, geo["district"])
+                from backend.db import save_geocode_cache
+                save_geocode_cache(slug, address, geo)
+        except Exception as e:
+            logger.warning("[Geocoder] Błąd dla %s: %s", address, e)
+        time.sleep(1.1)  # Nominatim rate limit
+
+
+# ─────────────────────────────────────────────
+# 4. Kolejka LLM (Ollama text)
+# ─────────────────────────────────────────────
+
+def process_llm_queue_sync():
+    """Wrapper synchroniczny dla async process_llm_queue."""
+    from backend.nlp.llm_scorer import process_llm_queue
+    try:
+        asyncio.run(process_llm_queue())
+    except Exception:
+        logger.exception("[LLM] Błąd kolejki LLM")
+
+
+# ─────────────────────────────────────────────
+# 5. Kolejka photo (CLIP + Ollama Vision)
+# ─────────────────────────────────────────────
+
+def process_photo_queue():
+    """Analizuje zdjęcia dla ofert z score > 0.08."""
+    try:
+        from backend.cv.vision_scorer import process_photo_queue as _process
+        asyncio.run(_process())
+    except ImportError:
+        logger.debug("[Photo] Moduł cv.vision_scorer niedostępny (Faza 4 nie wdrożona)")
+    except Exception:
+        logger.exception("[Photo] Błąd kolejki zdjęć")
+
+
+# ─────────────────────────────────────────────
+# 6. Market stats + ML retrain
+# ─────────────────────────────────────────────
+
+def update_market_stats():
     from backend.db import generate_market_stats
-    scheduler.add_job(
-        generate_market_stats,
-        "cron",
-        hour=3,
-        minute=0,
-        id="stats_update",
-        replace_existing=True,
-    )
-    
-    # 3. Trening modelu ML (co niedzielę o 2:00)
+    try:
+        generate_market_stats()
+        logger.info("[Stats] market_stats zaktualizowane")
+    except Exception:
+        logger.exception("[Stats] Błąd generowania statystyk")
+
+
+def retrain_ml():
     from backend.ml.trainer import train_model
+    try:
+        result = train_model()
+        logger.info("[ML] Retrain zakończony: %s", result)
+    except Exception:
+        logger.exception("[ML] Błąd retrainingu modelu")
+
+
+# ─────────────────────────────────────────────
+# 7. Alerty + Telegram digest
+# ─────────────────────────────────────────────
+
+def check_alerts():
+    """Sprawdza warunki alertów i wysyła powiadomienia Telegram."""
+    try:
+        from backend.alerts.evaluator import run_alert_check
+        run_alert_check()
+    except ImportError:
+        logger.debug("[Alerts] Moduł alerts.evaluator niedostępny (Faza 5)")
+    except Exception:
+        logger.exception("[Alerts] Błąd sprawdzania alertów")
+
+
+def send_daily_digest():
+    """Wysyła dzienny digest Telegram z top okazjami."""
+    try:
+        from backend.alerts.channels import send_daily_digest as _digest
+        _digest()
+    except ImportError:
+        logger.debug("[Digest] Moduł alerts.channels niedostępny (Faza 5)")
+    except Exception:
+        logger.exception("[Digest] Błąd wysyłania digestu")
+
+
+# ─────────────────────────────────────────────
+# Start / Stop
+# ─────────────────────────────────────────────
+
+def start_scheduler():
+    init_db()
+
+    # ── Scrapowanie portali ──────────────────
     scheduler.add_job(
-        train_model,
-        "cron",
-        day_of_week="sun",
-        hour=2,
-        minute=0,
-        id="ml_retrain",
-        replace_existing=True,
+        crawl_all_sources, "cron",
+        hour="6,12,18", minute=0,
+        id="crawl_all_portals", replace_existing=True,
     )
-    
+
+    # ── Dane RCN (Deweloperuch) ─────────────
+    scheduler.add_job(
+        update_rcn_data, "cron",
+        hour=4, minute=0,
+        id="rcn_update", replace_existing=True,
+    )
+    scheduler.add_job(
+        geocode_pending, "interval",
+        hours=2,
+        id="geocode_pending", replace_existing=True,
+    )
+
+    # ── Kolejka LLM ─────────────────────────
+    scheduler.add_job(
+        process_llm_queue_sync, "interval",
+        minutes=10,
+        id="llm_queue", replace_existing=True,
+    )
+
+    # ── Kolejka photo ────────────────────────
+    scheduler.add_job(
+        process_photo_queue, "interval",
+        minutes=15,
+        id="photo_queue", replace_existing=True,
+    )
+
+    # ── Market stats (co noc o 3:00) ─────────
+    scheduler.add_job(
+        update_market_stats, "cron",
+        hour=3, minute=0,
+        id="stats_update", replace_existing=True,
+    )
+
+    # ── ML retrain (co niedzielę o 2:00) ────
+    scheduler.add_job(
+        retrain_ml, "cron",
+        day_of_week="sun", hour=2, minute=0,
+        id="ml_retrain", replace_existing=True,
+    )
+
+    # ── Alerty co 15 min ────────────────────
+    scheduler.add_job(
+        check_alerts, "interval",
+        minutes=15,
+        id="alert_check", replace_existing=True,
+    )
+
+    # ── Dzienny digest o 8:00 ───────────────
+    scheduler.add_job(
+        send_daily_digest, "cron",
+        hour=8, minute=0,
+        id="daily_digest", replace_existing=True,
+    )
+
     scheduler.start()
-    logger.info("Scheduler uruchomiony z zadanym interwalem: %s minut", interval_minutes)
+    logger.info("[Scheduler] Uruchomiony z %d zadaniami.", len(scheduler.get_jobs()))
+
+    # Załaduj dane RCN jeśli baza pusta (w tle po 10s od startu)
+    scheduler.add_job(
+        initial_rcn_load, "date",
+        run_date=None,  # od razu
+        id="initial_rcn_load", replace_existing=True,
+    )
 
 
 def stop_scheduler():
     if scheduler.running:
         scheduler.shutdown()
-        logger.info("Scheduler zatrzymany")
+        logger.info("[Scheduler] Zatrzymany.")

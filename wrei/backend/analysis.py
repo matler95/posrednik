@@ -4,6 +4,7 @@ from backend.model import (
     opportunity_score,
     price_gap_ratio,
     price_per_square_meter,
+    transaction_gap_ratio,
 )
 from backend.ml.predictor import predict_value
 from backend.nlp.extractor import extract_structured_features
@@ -66,25 +67,47 @@ def text_score_from_llm(llm_analysis: dict) -> float:
     return round(max(0.0, min((investment * 0.6 + negotiation * 0.4) + urgency_bonus - red_flag_penalty, 1.0)), 4)
 
 
-def enrich_listings(listings):
+def photo_score_from_analysis(photo_analysis: dict) -> float:
+    """Wyciąga photo_score z wyników analizy CV."""
+    if not photo_analysis:
+        return 0.0
+    return float(photo_analysis.get("photo_score", 0.0))
+
+
+def _get_rcn_data(city_slug: str, district: str | None, rooms: int | None):
+    """Pobiera benchmark RCN i CAGR dla dzielnicy. Ignoruje błędy (fallback na None)."""
+    try:
+        from backend.market.trend_analyzer import get_rcn_benchmark, compute_cagr
+        benchmark = get_rcn_benchmark(city_slug, district=district, rooms=rooms)
+        cagr = compute_cagr(city_slug, district=district, years=5)
+        return benchmark, cagr
+    except Exception:
+        return None, None
+
+
+def enrich_listings(listings, city_slug: str = "warszawa"):
     averages = group_average_price_per_sqm(listings)
+
+    # Cache RCN per (district, rooms) — żeby nie odpytywać DB dla każdej oferty osobno
+    rcn_cache: dict[tuple, tuple] = {}
+
     enriched = []
     for listing in listings:
         listing = listing.copy()
         listing["price_per_m2"] = listing.get("price_per_m2") or price_per_square_meter(listing)
-        
+
         ml_est, is_ml = predict_value(listing, averages)
         listing["estimated_value"] = ml_est
         listing["is_ml_estimate"] = is_ml
-        
+
         listing["price_gap_pct"] = price_gap_ratio(listing.get("price"), ml_est)
         listing["market_position"] = market_position(listing, averages)
         listing["direct_bonus"] = 0.05 if listing.get("direct_offer") else 0.0
-        
-        # Ekstrakcja cech ze spacy jesli brakuje
+
+        # Ekstrakcja cech ze spacy jeśli brakuje
         if not listing.get("features"):
             listing["features"] = extract_structured_features(listing.get("description", ""))
-            
+
         # Obliczenie text_score
         llm_analysis = listing.get("llm_analysis")
         if llm_analysis and "error" not in llm_analysis:
@@ -96,8 +119,30 @@ def enrich_listings(listings):
             listing["text_penalty"] = description_analysis["text_penalty"]
             listing["text_score"] = max(0.0, min(1.0, 0.5 + description_analysis["text_bonus"] - description_analysis["text_penalty"]))
             listing["keywords"] = description_analysis["keywords"]
-        
-        listing["score"] = opportunity_score(listing, averages, ml_est)
+
+        # Photo score
+        listing["photo_score"] = photo_score_from_analysis(listing.get("photo_analysis"))
+
+        # RCN benchmark + CAGR (z cache per dzielnica)
+        district = listing.get("district")
+        try:
+            rooms_int = int(listing.get("rooms") or 0) or None
+        except (ValueError, TypeError):
+            rooms_int = None
+        cache_key = (city_slug, district, rooms_int)
+        if cache_key not in rcn_cache:
+            rcn_cache[cache_key] = _get_rcn_data(city_slug, district, rooms_int)
+        rcn_benchmark, cagr = rcn_cache[cache_key]
+
+        listing["rcn_benchmark"] = rcn_benchmark
+        listing["cagr_5y"] = cagr
+        listing["transaction_gap"] = transaction_gap_ratio(listing, rcn_benchmark)
+
+        listing["score"] = opportunity_score(
+            listing, averages, ml_est,
+            rcn_benchmark=rcn_benchmark,
+            cagr=cagr,
+        )
         enriched.append(listing)
     return enriched
 
@@ -112,3 +157,5 @@ def find_opportunities(listings, threshold=0.15):
         if listing.get("score", 0.0) >= threshold
     ]
     return sorted(opportunities, key=lambda x: x["score"], reverse=True)
+
+

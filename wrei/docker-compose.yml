@@ -7,6 +7,8 @@ services:
       POSTGRES_PASSWORD: postgres
     ports:
       - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
 
   backend:
     build:
@@ -18,12 +20,23 @@ services:
       - db
     volumes:
       - ./backend:/app/backend
+      - wrei_photos:/app/photos       # zdjęcia pobrane przez CV
     environment:
       POSTGRES_DB: wrei
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_HOST: db
+      # Ollama działa na HOŚCIE — host.docker.internal to Windows/Mac gateway
       OLLAMA_URL: http://host.docker.internal:11434/api/chat
+      OLLAMA_MODEL: qwen2.5:7b
+      OLLAMA_VISION_MODEL: moondream
+      # Telegram (wypełnij przy wdrożeniu Fazy 5)
+      TELEGRAM_TOKEN: ""
+      TELEGRAM_CHAT_ID: ""
+      # Multi-miasto: comma-separated slugi
+      TARGET_CITIES: warszawa
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   dashboard:
     build:
@@ -33,3 +46,9 @@ services:
       - "8501:8501"
     depends_on:
       - backend
+    environment:
+      BACKEND_URL: http://backend:8000
+
+volumes:
+  pgdata:
+  wrei_photos:

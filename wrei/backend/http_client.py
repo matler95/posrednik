@@ -103,13 +103,19 @@ def fetch_html(
     def _do_fetch():
         transport = httpx.HTTPTransport(retries=0)  # retry zarządzamy przez tenacity
         proxy_url = proxy or None
-        with httpx.Client(
+
+        # httpx >= 0.28 nie obsługuje proxies= — używamy mounts=
+        client_kwargs = dict(
             transport=transport,
-            proxies={"all://": proxy_url} if proxy_url else None,
             timeout=timeout,
             follow_redirects=True,
-        ) as client:
+        )
+        if proxy_url:
+            client_kwargs["mounts"] = {"all://": httpx.HTTPTransport(proxy=proxy_url)}
+
+        with httpx.Client(**client_kwargs) as client:
             response = client.get(url, headers=headers)
+
             if response.status_code in RETRYABLE_STATUS:
                 logger.warning("[HTTP] %s → status %s, retry...", url, response.status_code)
                 raise RetryableHTTPError(response.status_code, url)
