@@ -120,7 +120,8 @@ async def process_llm_queue():
     import asyncio
     
     while True:
-        listings = get_listings_for_llm_analysis(limit=5)
+        listings = get_listings_for_llm_analysis(limit=50)
+
         if not listings:
             # logger.info("[LLM] Kolejka pusta. Czekam 30s...")
             await asyncio.sleep(30)

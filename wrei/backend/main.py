@@ -16,8 +16,18 @@ app = FastAPI(title="WREI Backend")
 
 @app.on_event("startup")
 async def startup_event():
+    # Inicjalizacja bazy
+    from backend.db import get_conn
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE IF NOT EXISTS hunt_config (id INT PRIMARY KEY, max_price INT, max_area INT, city_slug TEXT, updated_at TIMESTAMP)")
+    conn.commit()
+    cur.close(); conn.close()
+    
     # Uruchom procesy AI w tle na stałe
     asyncio.create_task(process_llm_queue())
+
+
     # Opcjonalnie: asyncio.create_task(process_photo_queue())
 
 
@@ -154,7 +164,27 @@ def ingest_market_data(background_tasks: BackgroundTasks, city_slug: str = "wars
     background_tasks.add_task(task)
     return {"status": "started", "city_slug": city_slug}
 
+@app.post("/set-hunt-config")
+def set_config(max_price: int, max_area: int, city_slug: str):
+    from backend.db import save_hunt_config
+    save_hunt_config(max_price, max_area, city_slug)
+    return {"status": "saved"}
+
+@app.get("/get-hunt-config")
+
+def get_config():
+    from backend.db import get_conn
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT max_price, max_area, city_slug FROM hunt_config WHERE id = 1")
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if row:
+        return {"max_price": row[0], "max_area": row[1], "city_slug": row[2]}
+    return {"max_price": 430000, "max_area": 45, "city_slug": "warszawa"}
+
 @app.get("/stats")
+
 def get_stats():
     from backend.db import get_conn
     conn = get_conn()

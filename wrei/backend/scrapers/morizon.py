@@ -113,14 +113,12 @@ def extract_price(price_text):
 
 
 def search(
-    min_price=None,
-    max_price=None,
-    min_area=None,
-    max_area=None,
-    rooms=None,
-    pages=1,
-    direct_only=False,
+    min_price=None, max_price=None,
+    min_area=None, max_area=None,
+    rooms=None, pages=1, direct_only=False,
+    district=None, **kwargs
 ):
+
     all_listings = []
     for page in range(1, pages + 1):
         url = build_morizon_url(

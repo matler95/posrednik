@@ -54,11 +54,11 @@ def get_rcn_benchmark(
     result = None
     # 1. Dzielnica + Pokoje + Metraż (+/- 15%)
     if district and rooms and area:
-        result = _fetch("district = %s AND rooms_number = %s AND area BETWEEN %s AND %s", 
+        result = _fetch("district = %s AND rooms_number = %s AND size BETWEEN %s AND %s", 
                         [district, rooms, area * 0.85, area * 1.15])
     # 2. Dzielnica + Metraż
     if result is None and district and area:
-        result = _fetch("district = %s AND area BETWEEN %s AND %s", [district, area * 0.85, area * 1.15])
+        result = _fetch("district = %s AND size BETWEEN %s AND %s", [district, area * 0.85, area * 1.15])
     # 3. Dzielnica + Pokoje
     if result is None and district and rooms:
         result = _fetch("district = %s AND rooms_number = %s", [district, rooms])
@@ -67,7 +67,7 @@ def get_rcn_benchmark(
         result = _fetch("district = %s", [district])
     # 5. Całe miasto + Metraż
     if result is None and area:
-        result = _fetch("area BETWEEN %s AND %s", [area * 0.85, area * 1.15])
+        result = _fetch("size BETWEEN %s AND %s", [area * 0.85, area * 1.15])
     
     cur.close(); conn.close()
     return result

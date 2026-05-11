@@ -6,7 +6,14 @@ from urllib.parse import quote_plus
 import httpx
 from bs4 import BeautifulSoup
 
-from backend.scraper_utils import apply_filters, build_query_string, fetch_html
+from backend.scraper_utils import (
+    apply_filters, 
+    build_query_string, 
+    fetch_html,
+    extract_price,
+    extract_area_from_text
+)
+
 
 OLX_BASE_URL = "https://www.olx.pl/nieruchomosci/mieszkania/warszawa"
 
@@ -45,90 +52,73 @@ def extract_price(price_text: str) -> int | None:
 
 
 def extract_listings_from_html(html: str) -> list[dict]:
-    soup = BeautifulSoup(html, "lxml")
     listings = []
+    
+    # Metoda 1: Szukanie JSONa (najdokładniejsza)
+    import json
+    try:
+        match = re.search(r'window\.__PRERENDERED_STATE__\s*=\s*"(.*?)";', html)
+        if match:
+            raw_data = match.group(1).replace('\\"', '"').replace('\\\\', '\\')
+            data = json.loads(raw_data)
+            # Ścieżka do ofert w JSON OLX:
+            items = data.get("adview", {}).get("ads", []) or data.get("listing", {}).get("listing", {}).get("ads", [])
+            for item in items:
+                try:
+                    price = extract_price(str(item.get("price", {}).get("value", 0)))
+                    if not price: continue
+                    listings.append({
+                        "portal": "olx",
+                        "title": item.get("title", "Mieszkanie"),
+                        "price": price,
+                        "area": extract_area_from_text(item.get("title", "")),
+                        "district": "Warszawa",
+                        "url": item.get("url", ""),
+                        "source": "olx"
+                    })
+                except: continue
+            if listings: return listings
+    except: pass
 
-    cards = soup.find_all("div", {"data-cy": "l-card"})
-    for card in cards:
-        try:
-            # Tytuł
-            title_elem = card.find("h4") or card.find("h3")
-            title = title_elem.get_text(strip=True) if title_elem else ""
-            if not title:
-                img = card.find("img")
-                title = img["alt"] if img and "alt" in img.attrs else "Bez tytułu"
-
-            # Cena
-            price_elem = card.find("p", {"data-testid": "ad-price"})
-            price_text = price_elem.get_text(strip=True) if price_elem else ""
-            price = extract_price(price_text)
-
-            # Metraż — z tytułu
-            area = extract_area_from_text(title)
-
-            # Jeśli nie w tytule — szukaj w parametrach karty
-            if area is None:
-                params_text = card.get_text(" ", strip=True)
-                area = extract_area_from_text(params_text)
-
-            # Dzielnica
-            location_elem = card.find("p", {"data-testid": "location-date"})
-            district = "Warszawa"
-            if location_elem:
-                location_text = location_elem.get_text(strip=True)
-                district_match = re.match(r"^([^,\-–]+)", location_text)
-                if district_match:
-                    district = district_match.group(1).strip()
-
-            # Pokoje z tytułu
-            rooms = None
-            rooms_match = re.search(r"(\d+)\s*pok", title, re.IGNORECASE)
-            if rooms_match:
-                rooms = int(rooms_match.group(1))
-
-            # URL
-            link_elem = card.find("a", href=True)
-            url = link_elem["href"] if link_elem else ""
-            if url.startswith("/"):
-                url = f"https://www.olx.pl{url}"
-
-            # Oferta bezpośrednia
-            card_text = card.get_text().lower()
-            direct_offer = "oferta prywatna" in card_text
-
-            if price:
-                listings.append({
-                    "portal": "olx",        # BUG FIX — brakowało
-                    "title": title,
-                    "price": price,
-                    "area": area,           # BUG FIX — teraz wyciągamy
-                    "rooms": rooms,
-                    "district": district,
-                    "url": url,
-                    "direct_offer": direct_offer,
-                    "source": "olx",
-                })
-        except Exception as e:
-            print(f"[OLX] Błąd parsowania karty: {e}")
-            continue
-
+    # Metoda 2: Agresywny Regex (jeśli JSON zawiedzie)
+    # Szukamy linków do ofert: /d/oferta/...
+    links = re.findall(r'href="(https://www.olx.pl/d/oferta/[^"]+)"', html)
+    for url in set(links):
+        listings.append({
+            "portal": "olx",
+            "title": "Mieszkanie OLX",
+            "price": 0, # Zostanie uzupełnione przez AI z opisu jeśli trzeba
+            "area": 0,
+            "district": "Warszawa",
+            "url": url,
+            "source": "olx"
+        })
+    
     return listings
+
+
+
 
 
 def build_olx_url(
     min_price=None, max_price=None,
     min_area=None, max_area=None,
     rooms=None, direct_only=False, page=1,
+    district=None
 ) -> str:
+    # Slugify district
+    dist_slug = district.lower().replace("ł", "l").replace("ó", "o").replace("ś", "s").replace("ź", "z").replace("ż", "z").replace("ć", "c").replace("ń", "n").replace(" ", "-") if district else None
+    
+    base = "https://www.olx.pl/nieruchomosci/mieszkania/warszawa"
+    if dist_slug:
+        base = f"https://www.olx.pl/nieruchomosci/mieszkania/warszawa/{dist_slug}/"
+    
     params = {}
-    if min_price is not None:
-        params["search[filter_float_price:from]"] = str(min_price)
-    if max_price is not None:
-        params["search[filter_float_price:to]"] = str(max_price)
-    if min_area is not None:
-        params["search[filter_float_m:from]"] = str(min_area)
-    if max_area is not None:
-        params["search[filter_float_m:to]"] = str(max_area)
+    if min_price is not None: params["search[filter_float_price:from]"] = str(min_price)
+    if max_price is not None: params["search[filter_float_price:to]"] = str(max_price)
+    if min_area is not None: params["search[filter_float_m:from]"] = str(min_area)
+    if max_area is not None: params["search[filter_float_m:to]"] = str(max_area)
+
     if rooms:
         normalized = normalize_rooms_value(str(rooms))
         if normalized:
@@ -147,6 +137,7 @@ def search(
     min_price=None, max_price=None,
     min_area=None, max_area=None,
     rooms=None, pages=1, direct_only=False,
+    district=None,
     **kwargs,  # query_url ignorowany dla OLX
 ) -> list[dict]:
     all_listings = []
@@ -155,7 +146,9 @@ def search(
             min_price=min_price, max_price=max_price,
             min_area=min_area, max_area=max_area,
             rooms=rooms, direct_only=direct_only, page=page,
+            district=district
         )
+
         print(f"[OLX] Strona {page}: {url}")
         html = fetch_html(url)
         if not html:

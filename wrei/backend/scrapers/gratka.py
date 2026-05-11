@@ -96,7 +96,7 @@ def search(
     min_price=None, max_price=None,
     min_area=None, max_area=None,
     rooms=None, pages=1, direct_only=False,
-    **kwargs,
+    district=None, **kwargs,
 ) -> list[dict]:
     all_listings = []
     for page in range(1, pages + 1):

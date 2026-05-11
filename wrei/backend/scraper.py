@@ -15,51 +15,46 @@ def normalize_portals(portals):
     return [portal.strip().lower() for portal in portals if isinstance(portal, str) and portal.strip()]
 
 
+WARSAW_DISTRICTS = [
+    "Bemowo", "Białołęka", "Bielany", "Mokotów", "Ochota", "Praga-Południe", 
+    "Praga-Północ", "Rembertów", "Śródmieście", "Targówek", "Ursus", 
+    "Ursynów", "Wawer", "Wesoła", "Wilanów", "Włochy", "Wola", "Żoliborz"
+]
+
 def search(
-    query_url=None,
+    city_slug="warszawa",
     portals=None,
-    min_price=None,
-    max_price=None,
-    min_area=None,
-    max_area=None,
-    rooms=None,
-    pages=1,
-    direct_only=False,
+    min_price=None, max_price=None,
+    min_area=None, max_area=None,
+    rooms=None, pages=1, direct_only=False,
 ):
     selected_portals = normalize_portals(portals)
-    if query_url and len(selected_portals) != 1:
-        raise ValueError("query_url może być użyte tylko z jednym portalu.")
-
-    listings = []
+    all_listings = []
+    
     for portal in selected_portals:
         scraper = PORTAL_SCRAPERS.get(portal)
-        if not scraper:
+        if not scraper: continue
+        
+        try:
+            print(f"[HUNTER] Skanuję {portal.upper()} | Lokalizacja: {city_slug.upper()} (Całe miasto)...")
+            listings = scraper(
+                min_price=min_price,
+                max_price=max_price,
+                min_area=min_area,
+                max_area=max_area,
+                rooms=rooms,
+                pages=pages,
+                direct_only=direct_only,
+                district=None # Skanujemy globalnie
+            )
+            if listings:
+                print(f"[HUNTER] {portal.upper()}: Znaleziono {len(listings)} ofert")
+                all_listings.extend(listings)
+        except Exception as e:
+            print(f"[ERR] {portal} błąd: {e}")
             continue
 
-        if query_url:
-            listings.extend(
-                scraper(
-                    query_url=query_url,
-                    min_price=min_price,
-                    max_price=max_price,
-                    min_area=min_area,
-                    max_area=max_area,
-                    rooms=rooms,
-                    pages=pages,
-                    direct_only=direct_only,
-                )
-            )
-        else:
-            listings.extend(
-                scraper(
-                    min_price=min_price,
-                    max_price=max_price,
-                    min_area=min_area,
-                    max_area=max_area,
-                    rooms=rooms,
-                    pages=pages,
-                    direct_only=direct_only,
-                )
-            )
+    return deduplicate_listings(all_listings)
 
-    return deduplicate_listings(listings)
+
+

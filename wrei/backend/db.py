@@ -303,14 +303,35 @@ def save_llm_analysis(url: str, analysis: dict):
     conn.close()
 
 
+def save_hunt_config(max_price: int, max_area: int, city_slug: str):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO hunt_config (id, max_price, max_area, city_slug, updated_at)
+        VALUES (1, %s, %s, %s, NOW())
+        ON CONFLICT (id) DO UPDATE SET
+            max_price = EXCLUDED.max_price,
+            max_area = EXCLUDED.max_area,
+            city_slug = EXCLUDED.city_slug,
+            updated_at = NOW()
+    """, (max_price, max_area, city_slug))
+    conn.commit()
+    cur.close()
+    conn.close()
+
 def get_listings_for_llm_analysis(limit: int = 10) -> list[dict]:
     conn = get_conn()
     cur = conn.cursor()
-    # Analizujemy tylko oferty, ktore MOGĄ byc ciekawe (np. score > 0.08) i nie mają analizy
+    # Priorytetyzujemy: 
+    # 1. Oferty pasujące do aktualnego configu polowania
+    # 2. Wysoki score
     cur.execute("""
-        SELECT * FROM listings
-        WHERE llm_analysis IS NULL AND score > 0.08
-        ORDER BY score DESC NULLS LAST, created_at DESC
+        WITH cfg AS (SELECT max_price, max_area FROM hunt_config WHERE id = 1)
+        SELECT l.* FROM listings l, cfg
+        WHERE l.llm_analysis IS NULL
+        ORDER BY 
+            (l.price <= cfg.max_price AND l.area <= cfg.max_area) DESC,
+            l.score DESC NULLS LAST
         LIMIT %s
     """, (limit,))
     cols = [d[0] for d in cur.description]
@@ -318,6 +339,7 @@ def get_listings_for_llm_analysis(limit: int = 10) -> list[dict]:
     cur.close()
     conn.close()
     return rows
+
 
 
 def save_listing_history(listings: list[dict]):
