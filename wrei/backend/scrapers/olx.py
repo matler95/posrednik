@@ -1,164 +1,312 @@
-# backend/scrapers/olx.py
-
+"""
+OLX scraper — pobiera ogłoszenia nieruchomości z OLX.pl.
+Używa __NEXT_DATA__ JSON zamiast kruchego regex na HTML.
+Fallback: Apollo cache w oknie globalnym.
+"""
+import json
 import re
-from urllib.parse import quote_plus
-
-import httpx
-from bs4 import BeautifulSoup
+import logging
 
 from backend.scraper_utils import (
-    apply_filters, 
-    build_query_string, 
+    apply_filters,
     fetch_html,
     extract_price,
-    extract_area_from_text
+    extract_area_from_text,
 )
 
+logger = logging.getLogger(__name__)
 
-OLX_BASE_URL = "https://www.olx.pl/nieruchomosci/mieszkania/warszawa"
+OLX_BASE = "https://www.olx.pl/nieruchomosci/mieszkania/sprzedaz/warszawa"
 
 
 def available():
     return "olx"
 
 
-def normalize_rooms_value(rooms):
-    if not rooms:
-        return None
-    if isinstance(rooms, int):
-        rooms = str(rooms)
-    mapping = {"1": "one", "2": "two", "3": "three", "4": "four",
-               "5": "five", "6": "six", "7": "seven", "8": "eight",
-               "9": "nine", "10": "ten"}
-    return mapping.get(rooms)
+# ---------------------------------------------------------------------------
+# URL builder
+# ---------------------------------------------------------------------------
 
+ROOMS_MAP = {
+    "1": "one", "2": "two", "3": "three",
+    "4": "four", "5": "five", "6": "six",
+}
 
-def extract_area_from_text(text: str) -> float | None:
-    """Wyciąga metraż z tytułu lub opisu, np. '55m²', '55 m2', '55,5 m²'"""
-    match = re.search(r"(\d+(?:[.,]\d+)?)\s*m[²2]", text, re.IGNORECASE)
-    if match:
-        return float(match.group(1).replace(",", "."))
-    return None
-
-
-def extract_price(price_text: str) -> int | None:
-    price_text = price_text.replace("zł", "").replace("\xa0", "").replace(" ", "").strip()
-    if any(x in price_text.lower() for x in ["doniegocjacji", "dowyceny", "zapytaj"]):
-        return None
-    match = re.search(r"(\d+(?:\s?\d+)*)", price_text.replace(" ", ""))
-    if match:
-        return int(re.sub(r"\D", "", match.group(1)))
-    return None
-
-
-def extract_listings_from_html(html: str) -> list[dict]:
-    listings = []
-    
-    # Metoda 1: Szukanie JSONa (najdokładniejsza)
-    import json
-    try:
-        match = re.search(r'window\.__PRERENDERED_STATE__\s*=\s*"(.*?)";', html)
-        if match:
-            raw_data = match.group(1).replace('\\"', '"').replace('\\\\', '\\')
-            data = json.loads(raw_data)
-            # Ścieżka do ofert w JSON OLX:
-            items = data.get("adview", {}).get("ads", []) or data.get("listing", {}).get("listing", {}).get("ads", [])
-            for item in items:
-                try:
-                    price = extract_price(str(item.get("price", {}).get("value", 0)))
-                    if not price: continue
-                    listings.append({
-                        "portal": "olx",
-                        "title": item.get("title", "Mieszkanie"),
-                        "price": price,
-                        "area": extract_area_from_text(item.get("title", "")),
-                        "district": "Warszawa",
-                        "url": item.get("url", ""),
-                        "source": "olx"
-                    })
-                except: continue
-            if listings: return listings
-    except: pass
-
-    # Metoda 2: Agresywny Regex (jeśli JSON zawiedzie)
-    # Szukamy linków do ofert: /d/oferta/...
-    links = re.findall(r'href="(https://www.olx.pl/d/oferta/[^"]+)"', html)
-    for url in set(links):
-        listings.append({
-            "portal": "olx",
-            "title": "Mieszkanie OLX",
-            "price": 0, # Zostanie uzupełnione przez AI z opisu jeśli trzeba
-            "area": 0,
-            "district": "Warszawa",
-            "url": url,
-            "source": "olx"
-        })
-    
-    return listings
-
-
-
+DISTRICT_SLUGS = {
+    "Bemowo": "bemowo", "Białołęka": "bialoleka", "Bielany": "bielany",
+    "Mokotów": "mokotow", "Ochota": "ochota", "Praga-Południe": "praga-poludnie",
+    "Praga-Północ": "praga-polnoc", "Śródmieście": "srodmiescie",
+    "Targówek": "targowek", "Ursus": "ursus", "Ursynów": "ursynow",
+    "Wawer": "wawer", "Wilanów": "wilanow", "Włochy": "wlochy",
+    "Wola": "wola", "Żoliborz": "zoliborz",
+}
 
 
 def build_olx_url(
     min_price=None, max_price=None,
     min_area=None, max_area=None,
-    rooms=None, direct_only=False, page=1,
-    district=None
+    rooms=None, direct_only=False,
+    page=1, district=None,
 ) -> str:
-    # Slugify district
-    dist_slug = district.lower().replace("ł", "l").replace("ó", "o").replace("ś", "s").replace("ź", "z").replace("ż", "z").replace("ć", "c").replace("ń", "n").replace(" ", "-") if district else None
-    
-    base = "https://www.olx.pl/nieruchomosci/mieszkania/warszawa"
-    if dist_slug:
-        base = f"https://www.olx.pl/nieruchomosci/mieszkania/warszawa/{dist_slug}/"
-    
-    params = {}
-    if min_price is not None: params["search[filter_float_price:from]"] = str(min_price)
-    if max_price is not None: params["search[filter_float_price:to]"] = str(max_price)
-    if min_area is not None: params["search[filter_float_m:from]"] = str(min_area)
-    if max_area is not None: params["search[filter_float_m:to]"] = str(max_area)
+    params = []
+
+    if min_price:
+        params.append(f"search[filter_float_price:from]={int(min_price)}")
+    if max_price:
+        params.append(f"search[filter_float_price:to]={int(max_price)}")
+    if min_area:
+        params.append(f"search[filter_float_m:from]={int(min_area)}")
+    if max_area:
+        params.append(f"search[filter_float_m:to]={int(max_area)}")
 
     if rooms:
-        normalized = normalize_rooms_value(str(rooms))
-        if normalized:
-            params["search[filter_enum_rooms][0]"] = normalized
+        room_list = rooms if isinstance(rooms, list) else [str(rooms)]
+        for r in room_list:
+            mapped = ROOMS_MAP.get(str(r))
+            if mapped:
+                params.append(f"search[filter_enum_rooms][0]={mapped}")
+
     if direct_only:
-        params["search[filter_enum_advertiser_type][0]"] = "private"
+        params.append("search[filter_enum_advertiser_type][0]=private")
+
     if page > 1:
-        params["page"] = str(page)
+        params.append(f"page={page}")
 
-    if not params:
-        return OLX_BASE_URL
-    return f"{OLX_BASE_URL}?{build_query_string(params)}"
+    # Baza URL z opcjonalną dzielnicą
+    if district and district in DISTRICT_SLUGS:
+        base = f"{OLX_BASE}/{DISTRICT_SLUGS[district]}"
+    else:
+        base = OLX_BASE
 
+    return f"{base}?{'&'.join(params)}" if params else base
+
+
+# ---------------------------------------------------------------------------
+# JSON extraction
+# ---------------------------------------------------------------------------
+
+def _extract_next_data(html: str) -> dict:
+    """Wyciąga __NEXT_DATA__ z HTML OLX."""
+    patterns = [
+        r'<script id="__NEXT_DATA__"[^>]*>(\{.+?\})</script>',
+        r'__NEXT_DATA__\s*=\s*(\{.+?\})\s*;',
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, html, re.S)
+        if m:
+            try:
+                return json.loads(m.group(1))
+            except json.JSONDecodeError:
+                continue
+    return {}
+
+
+def _find_listings_in_payload(payload: dict) -> list[dict]:
+    """Znajduje listę ogłoszeń w różnych możliwych miejscach JSON OLX."""
+    paths = [
+        # Nowa struktura OLX
+        lambda p: p.get("props", {}).get("pageProps", {}).get("listing", {}).get("listing", {}).get("ads", []),
+        # Starsza struktura
+        lambda p: p.get("props", {}).get("pageProps", {}).get("ads", []),
+        # Inna możliwa ścieżka
+        lambda p: p.get("props", {}).get("pageProps", {}).get("data", {}).get("ads", []),
+    ]
+    for path_fn in paths:
+        try:
+            result = path_fn(payload)
+            if result and isinstance(result, list) and len(result) > 0:
+                return result
+        except (AttributeError, TypeError):
+            continue
+    return []
+
+
+# ---------------------------------------------------------------------------
+# Field extractors
+# ---------------------------------------------------------------------------
+
+def _get_param(params: list, key: str) -> str | None:
+    """Pobiera wartość parametru z listy {key, value} OLX."""
+    for p in params:
+        if isinstance(p, dict) and p.get("key") == key:
+            val = p.get("value")
+            if isinstance(val, list) and val:
+                return val[0]
+            return val
+    return None
+
+
+def _normalize_olx_listing(item: dict) -> dict | None:
+    """Normalizuje jeden rekord OLX."""
+    # Cena
+    price_obj = item.get("price") or {}
+    price = None
+    if isinstance(price_obj, dict):
+        price_val = price_obj.get("value", {})
+        if isinstance(price_val, dict):
+            price = price_val.get("value") or price_val.get("amount")
+        elif isinstance(price_val, (int, float)):
+            price = price_val
+    if not price:
+        # Fallback z regularPrice
+        reg = item.get("regularPrice") or {}
+        if isinstance(reg, dict):
+            price = reg.get("value", {}).get("value") if isinstance(reg.get("value"), dict) else reg.get("value")
+
+    if not price:
+        return None
+    try:
+        price = int(float(str(price).replace(" ", "")))
+    except (ValueError, TypeError):
+        return None
+    if not (10_000 < price < 50_000_000):
+        return None
+
+    # Parametry
+    params = item.get("params") or []
+
+    # Metraż
+    area = None
+    area_raw = _get_param(params, "m")
+    if area_raw:
+        try:
+            area = float(str(area_raw).replace(",", ".").replace(" ", ""))
+        except (ValueError, TypeError):
+            pass
+    if not area:
+        area = extract_area_from_text(item.get("title") or "")
+    if not area or area < 5:
+        return None
+
+    # Pokoje
+    rooms = _get_param(params, "rooms") or _get_param(params, "number_of_rooms")
+    rooms_map_rev = {
+        "one": "1", "two": "2", "three": "3",
+        "four": "4", "five": "5", "six": "6",
+    }
+    if rooms and str(rooms).lower() in rooms_map_rev:
+        rooms = rooms_map_rev[str(rooms).lower()]
+
+    # URL
+    url = item.get("url") or ""
+    if url and not url.startswith("http"):
+        url = f"https://www.olx.pl{url}"
+    if not url:
+        return None
+
+    # Zdjęcia
+    photos = item.get("photos") or item.get("images") or []
+    images = []
+    for p in photos:
+        if isinstance(p, dict):
+            img_url = (
+                p.get("link")
+                or p.get("url")
+                or (p.get("thumbnail") or {}).get("url")
+            )
+            if img_url:
+                # OLX zwraca template {width}x{height} — podmień na duże zdjęcie
+                img_url = img_url.replace("{width}", "800").replace("{height}", "600")
+                images.append(img_url)
+        elif isinstance(p, str) and p.startswith("http"):
+            images.append(p)
+
+    # Dzielnica z lokalizacji
+    location = item.get("location") or {}
+    district = "Warszawa"
+    city_label = location.get("cityName") or location.get("city", {})
+    if isinstance(city_label, dict):
+        city_label = city_label.get("name", "")
+    district_obj = location.get("district") or {}
+    if isinstance(district_obj, dict):
+        district = district_obj.get("name") or district
+
+    # Oferta bezpośrednia
+    advertiser = item.get("advertiserType") or item.get("advertType") or ""
+    direct_offer = str(advertiser).lower() in ("private", "owner", "prywatne")
+
+    # Floor z parametrów
+    floor_raw = _get_param(params, "floor_select") or _get_param(params, "floor")
+    floor = None
+    if floor_raw:
+        floor_str = str(floor_raw).lower().replace("floor_", "").replace("parter", "0")
+        try:
+            floor = int(floor_str)
+        except (ValueError, TypeError):
+            pass
+
+    psm = round(price / area, 2) if area else None
+
+    return {
+        "portal": "olx",
+        "title": (item.get("title") or "")[:200],
+        "price": price,
+        "area": area,
+        "rooms": str(rooms) if rooms else None,
+        "district": district,
+        "price_per_m2": psm,
+        "url": url,
+        "direct_offer": direct_offer,
+        "description": item.get("description") or "",
+        "images": images[:8],
+        "floor": floor,
+        "total_floors": None,
+        "year_built": None,
+        "condition": None,
+        "building_type": None,
+        "heating": None,
+        "ownership": None,
+        "raw_location": location,
+        "features": {},
+        "source": "olx",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Public search function
+# ---------------------------------------------------------------------------
 
 def search(
     min_price=None, max_price=None,
     min_area=None, max_area=None,
-    rooms=None, pages=1, direct_only=False,
-    district=None,
-    **kwargs,  # query_url ignorowany dla OLX
+    rooms=None, pages=3,
+    direct_only=False, district=None,
+    **kwargs,
 ) -> list[dict]:
     all_listings = []
+
     for page in range(1, pages + 1):
         url = build_olx_url(
             min_price=min_price, max_price=max_price,
             min_area=min_area, max_area=max_area,
-            rooms=rooms, direct_only=direct_only, page=page,
-            district=district
+            rooms=rooms, direct_only=direct_only,
+            page=page, district=district,
         )
+        logger.info("[OLX] Strona %d: %s", page, url)
 
-        print(f"[OLX] Strona {page}: {url}")
-        html = fetch_html(url)
+        html = fetch_html(url, portal="olx")
         if not html:
+            logger.warning("[OLX] Pusta odpowiedź na stronie %d", page)
             break
-        page_listings = extract_listings_from_html(html)
-        if not page_listings:
+
+        payload = _extract_next_data(html)
+        if not payload:
+            logger.warning("[OLX] Brak __NEXT_DATA__ na stronie %d", page)
             break
-            
-        # Zapisujemy wszystko co pobralismy, nie filtrujemy agresywnie na tym etapie
-        all_listings.extend(page_listings)
+
+        items = _find_listings_in_payload(payload)
+        if not items:
+            logger.info("[OLX] Brak ofert na stronie %d — koniec paginacji", page)
+            break
+
+        normalized = []
+        for item in items:
+            listing = _normalize_olx_listing(item)
+            if listing:
+                normalized.append(listing)
+
+        logger.info("[OLX] Strona %d: %d/%d ofert", page, len(normalized), len(items))
+        all_listings.extend(normalized)
 
     return apply_filters(
         all_listings,
@@ -166,4 +314,3 @@ def search(
         min_area=min_area, max_area=max_area,
         rooms=rooms, direct_only=direct_only,
     )
-
