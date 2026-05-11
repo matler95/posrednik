@@ -42,18 +42,31 @@ def normalize_rooms_value(value) -> int | None:
     return None
 
 def room_matches(query, listing_rooms) -> bool:
-    if query is None or query == "": return True
+    if query is None or query == "" or (isinstance(query, list) and len(query) == 0): 
+        return True
+    
     normalized = normalize_rooms_value(listing_rooms)
-    if normalized is None: return False
-    query = str(query).strip()
-    if "," in query:
-        choices = [int(p) for p in query.split(",") if p.strip().isdigit()]
+    if normalized is None: 
+        return False
+        
+    if isinstance(query, list):
+        # Wsparcie dla listy pokoi [2, 3] z hunt_config
+        choices = []
+        for q in query:
+            if isinstance(q, int): choices.append(q)
+            elif isinstance(q, str) and q.isdigit(): choices.append(int(q))
+        return normalized in choices if choices else True
+
+    query_str = str(query).strip()
+    if "," in query_str:
+        choices = [int(p) for p in query_str.split(",") if p.strip().isdigit()]
         return normalized in choices
-    if "-" in query:
-        parts = [p.strip() for p in query.split("-")]
+    if "-" in query_str:
+        parts = [p.strip() for p in query_str.split("-")]
         if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
             return int(parts[0]) <= normalized <= int(parts[1])
-    if query.isdigit(): return normalized == int(query)
+    if query_str.isdigit(): 
+        return normalized == int(query_str)
     return False
 
 def apply_filters(listings: list[dict], min_price=None, max_price=None, min_area=None, max_area=None, rooms=None, direct_only=False) -> list[dict]:

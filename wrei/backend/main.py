@@ -16,20 +16,9 @@ app = FastAPI(title="WREI Backend")
 
 @app.on_event("startup")
 async def startup_event():
-    # Inicjalizacja bazy
-    from backend.db import get_conn
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("CREATE TABLE IF NOT EXISTS hunt_config (id INT PRIMARY KEY, config JSONB, updated_at TIMESTAMP)")
-    # Upewnijmy się, że jeśli tabela jest w starym formacie, zostanie przebudowana (prosta migracja)
-    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='hunt_config' AND column_name='max_price'")
-    if cur.fetchone():
-        cur.execute("DROP TABLE hunt_config")
-        cur.execute("CREATE TABLE hunt_config (id INT PRIMARY KEY, config JSONB, updated_at TIMESTAMP)")
-    
-    cur.execute("INSERT INTO hunt_config (id, config, updated_at) VALUES (1, '{}', NOW()) ON CONFLICT DO NOTHING")
-    conn.commit()
-    cur.close(); conn.close()
+    # Inicjalizacja bazy (migracje są w db.init_db, która jest wywoływana przez scheduler lub ręcznie)
+    from backend.db import init_db
+    init_db()
     
     # Uruchom procesy AI w tle na stałe
     asyncio.create_task(process_llm_queue())
@@ -94,32 +83,58 @@ def perform_full_crawl_task(params: dict, city_slug: str):
 @app.post("/run-crawl")
 def run_crawl(
     background_tasks: BackgroundTasks,
-    portals: str = Query("otodom"),
+    portals: str | None = Query(None),
     pages: int = Query(5, ge=1, le=100)
 ):
-    from backend.db import get_conn
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT config FROM hunt_config WHERE id = 1")
-    row = cur.fetchone()
-    cur.close(); conn.close()
+    from backend.db import get_hunt_config
+    cfg = get_hunt_config()
     
-    cfg = row[0] if row and row[0] else {}
     city_slug = cfg.get("city_slug", "warszawa")
+    selected_portals = portals or ",".join(cfg.get("portals", ["otodom"]))
     
     search_params = {
-        "portals": portals,
+        "portals": selected_portals,
         "pages": pages,
         "min_price": cfg.get("min_price"),
         "max_price": cfg.get("max_price"),
         "min_area": cfg.get("min_area"),
         "max_area": cfg.get("max_area"),
-        "rooms": None, # Na razie bez rooms, można dorobić
+        "rooms": cfg.get("rooms", []),
         "districts": cfg.get("districts", []),
-        "direct_only": False,
+        "direct_only": cfg.get("direct_only", False),
     }
     background_tasks.add_task(perform_full_crawl_task, search_params, city_slug)
     return {"status": "started", "message": "Zadanie uruchomione w tle."}
+
+
+@app.get("/hunt/status")
+def get_hunt_status():
+    from backend.db import get_hunt_config, get_conn
+    cfg = get_hunt_config()
+    
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM listings")
+    total_listings = cur.fetchone()[0]
+    
+    cur.execute("SELECT MAX(finished_at) FROM scrape_runs WHERE status = 'completed'")
+    last_run = cur.fetchone()[0]
+    cur.close(); conn.close()
+    
+    return {
+        "config": cfg,
+        "last_run": last_run,
+        "total_listings": total_listings
+    }
+
+
+@app.get("/hunt/listings")
+def get_hunt_listings_endpoint(
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0)
+):
+    from backend.db import get_hunt_listings
+    rows = get_hunt_listings(limit=limit, offset=offset)
+    return {"count": len(rows), "listings": rows}
 
 @app.get("/listings")
 def get_listings_endpoint(
@@ -155,13 +170,32 @@ def get_rcn_benchmark_endpoint(city_slug: str = "warszawa", district: str = None
     return {"benchmark_sqm": get_rcn_benchmark(city_slug, district=district, rooms=rooms)}
 
 @app.get("/market/trend")
-def get_market_trend(city_slug: str = "warszawa", district: str = None):
+def get_market_trend(city_slug: str = "warszawa", district: str | None = Query(None)):
     from backend.market.trend_analyzer import get_quarterly_trend, compute_cagr, get_offer_vs_transaction_gap
     return {
         "quarterly_trend": get_quarterly_trend(city_slug, district),
         "cagr_5y": compute_cagr(city_slug, district),
         "offer_vs_transaction_gap": get_offer_vs_transaction_gap(city_slug, district)
     }
+
+
+@app.get("/market/districts")
+def get_districts_stats(city_slug: str = "warszawa"):
+    from backend.db import get_conn
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT district, 
+               median_price_per_m2,
+               avg_price_per_m2,
+               sample_count
+        FROM market_stats
+        WHERE district IS NOT NULL AND rooms IS NULL AND condition IS NULL
+        ORDER BY median_price_per_m2 DESC
+    """)
+    rows = cur.fetchall()
+    cur.close(); conn.close()
+    return [{"district": r[0], "median": r[1], "avg": r[2], "count": r[3]} for r in rows]
 
 @app.post("/market/ingest")
 def ingest_market_data(background_tasks: BackgroundTasks, city_slug: str = "warszawa", days: int = 30):
@@ -174,35 +208,41 @@ def ingest_market_data(background_tasks: BackgroundTasks, city_slug: str = "wars
     background_tasks.add_task(task)
     return {"status": "started", "city_slug": city_slug}
 
+@app.get("/listings/{listing_id}")
+def get_listing_detail(listing_id: int):
+    from backend.db import get_listing_by_id, get_listing_price_history
+    listing = get_listing_by_id(listing_id)
+    if not listing:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    
+    history = get_listing_price_history(listing["url"])
+    return {**listing, "price_history": history}
+
+
 @app.post("/set-hunt-config")
 def set_config(config: dict):
     from backend.db import save_hunt_config
     save_hunt_config(config)
     return {"status": "saved"}
 
+
 @app.get("/get-hunt-config")
 def get_config():
-    from backend.db import get_conn
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT config FROM hunt_config WHERE id = 1")
-    row = cur.fetchone()
-    cur.close(); conn.close()
+    from backend.db import get_hunt_config
+    cfg = get_hunt_config()
     
     default_cfg = {
         "min_price": 0, "max_price": 430000, 
         "min_area": 0, "max_area": 45, 
-        "city_slug": "warszawa", "districts": [], "rooms": []
+        "city_slug": "warszawa", "districts": [], "rooms": [],
+        "portals": ["otodom", "olx"], "direct_only": False, "min_score_alert": 0.25
     }
     
-    if row and row[0]:
-        cfg = row[0]
-        # Uzupełnij brakujące klucze domyślnymi wartościami
-        for k, v in default_cfg.items():
-            if k not in cfg:
-                cfg[k] = v
-        return cfg
-    return default_cfg
+    # Uzupełnij brakujące klucze domyślnymi wartościami
+    for k, v in default_cfg.items():
+        if k not in cfg:
+            cfg[k] = v
+    return cfg
 
 @app.get("/stats")
 

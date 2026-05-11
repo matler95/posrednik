@@ -1,3 +1,5 @@
 /.venv
 wrei/backend/__pycache__/*
 wrei/backend/*.pyc
+wrei/backend/debug_raw.html
+*/__pycache__/

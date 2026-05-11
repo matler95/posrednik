@@ -30,11 +30,28 @@ scheduler = BackgroundScheduler(daemon=True)
 
 ALL_PORTALS = "otodom,olx,morizon,gratka,domiporta,nieruchomosci_online"
 
-def crawl_all_sources(portals: str = ALL_PORTALS, pages: int = 2, direct_only: bool = False):
-    logger.info("[Crawl] Start: portals=%s pages=%s", portals, pages)
+def crawl_all_sources(portals: str | None = None, pages: int = 2):
+    from backend.db import get_hunt_config
+    cfg = get_hunt_config()
+    
+    # Jeśli portals nie podano, bierzemy z configu
+    portals = portals or ",".join(cfg.get("portals", ["otodom"]))
+    direct_only = cfg.get("direct_only", False)
+
+    logger.info("[Crawl] Start (Hunt Mode): portals=%s pages=%s", portals, pages)
     listings = []
     try:
-        listings = search(portals=portals, pages=pages, direct_only=direct_only)
+        listings = search(
+            portals=portals, 
+            pages=pages, 
+            min_price=cfg.get("min_price"),
+            max_price=cfg.get("max_price"),
+            min_area=cfg.get("min_area"),
+            max_area=cfg.get("max_area"),
+            rooms=cfg.get("rooms", []),
+            districts=cfg.get("districts", []),
+            direct_only=direct_only
+        )
         save_listings(listings)
         record_scrape_run(portals, pages, direct_only, "completed", len(listings), query_url=None)
         logger.info("[Crawl] Zakończono: %d ofert", len(listings))

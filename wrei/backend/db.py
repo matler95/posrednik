@@ -317,6 +317,68 @@ def save_hunt_config(config_dict: dict):
     cur.close()
     conn.close()
 
+
+def get_hunt_config() -> dict:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT config FROM hunt_config WHERE id = 1")
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if row and row[0]:
+        return row[0]
+    return {}
+
+
+def get_hunt_listings(limit: int = 100, offset: int = 0) -> list[dict]:
+    conn = get_conn()
+    cur = conn.cursor()
+    # Bardziej zaawansowane filtrowanie oparte o JSONB hunt_config
+    cur.execute("""
+        WITH cfg AS (SELECT config FROM hunt_config WHERE id = 1)
+        SELECT l.* FROM listings l, cfg
+        WHERE 
+            -- Cena
+            l.price <= COALESCE((cfg.config->>'max_price')::int, 2147483647)
+            AND l.price >= COALESCE((cfg.config->>'min_price')::int, 0)
+            -- Powierzchnia
+            AND l.area <= COALESCE((cfg.config->>'max_area')::numeric, 999999)
+            AND l.area >= COALESCE((cfg.config->>'min_area')::numeric, 0)
+            -- Dzielnice (jeśli pusta lista, to wszystkie)
+            AND (
+                jsonb_array_length(cfg.config->'districts') = 0 
+                OR l.district = ANY(ARRAY(SELECT jsonb_array_elements_text(cfg.config->'districts')))
+            )
+            -- Pokoje (jeśli pusta lista, to wszystkie)
+            AND (
+                jsonb_array_length(cfg.config->'rooms') = 0 
+                OR l.rooms = ANY(ARRAY(SELECT jsonb_array_elements_text(cfg.config->'rooms')))
+            )
+            -- Tylko bezpośrednie
+            AND (
+                (cfg.config->>'direct_only')::boolean = FALSE 
+                OR l.direct_offer = TRUE
+            )
+        ORDER BY l.score DESC NULLS LAST, l.created_at DESC
+        LIMIT %s OFFSET %s
+    """, (limit, offset))
+    cols = [d[0] for d in cur.description]
+    rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+    cur.close()
+    conn.close()
+    return rows
+
+
+def get_listing_by_id(listing_id: int) -> dict | None:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM listings WHERE id = %s", (listing_id,))
+    cols = [d[0] for d in cur.description]
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return dict(zip(cols, row)) if row else None
+
 def get_listings_for_llm_analysis(limit: int = 10) -> list[dict]:
     conn = get_conn()
     cur = conn.cursor()
