@@ -8,6 +8,8 @@ import re
 import logging
 
 from backend.scraper_utils import (
+    apply_filters,
+    fetch_html,
     extract_area_from_text,
     validate_listing,
 )
