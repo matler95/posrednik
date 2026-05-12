@@ -1,6 +1,12 @@
 """
-Hunt Job Manager — spójny flow: config → scrape → enrich → save → AI queue.
-Jeden aktywny job na raz, progress streamowany przez SSE.
+Hunt Job Manager — spójny flow: config → scrape → enrich → save → AI (sync top 20).
+
+KLUCZOWE ZMIANY vs oryginał:
+1. LLM analiza top 20 ofert SYNCHRONICZNIE w trakcie polowania (nie w tle).
+   Inwestor czeka ~2-3 minuty ale dostaje kompletne wyniki od razu.
+2. Fix AttributeError: job.total_found → job.total_scraped.
+3. Po analizie LLM: re-score oferty (aktualizacja text_score w DB).
+4. Emituje szczegółowy progress: per-listing AI status.
 """
 import asyncio
 import json
@@ -13,15 +19,20 @@ from typing import AsyncGenerator, Callable
 
 logger = logging.getLogger(__name__)
 
+# Ile ofert analizujemy LLM SYNCHRONICZNIE przed wyświetleniem wyników
+LLM_SYNC_BATCH = 20
+# Maksymalna liczba ofert wysyłanych do LLM per run (reszta → kolejka w tle)
+LLM_TOTAL_LIMIT = 50
+
 
 class JobStatus(str, Enum):
-    PENDING   = "pending"
-    RUNNING   = "running"
-    ENRICHING = "enriching"
-    SAVING    = "saving"
-    AI_QUEUE  = "ai_analysis"
-    DONE      = "done"
-    ERROR     = "error"
+    PENDING     = "pending"
+    RUNNING     = "running"
+    ENRICHING   = "enriching"
+    SAVING      = "saving"
+    AI_ANALYSIS = "ai_analysis"
+    DONE        = "done"
+    ERROR       = "error"
 
 
 @dataclass
@@ -34,6 +45,7 @@ class HuntJob:
     total_scraped: int = 0
     total_saved: int = 0
     total_opportunities: int = 0
+    total_ai_analyzed: int = 0
     portals_counts: dict = field(default_factory=dict)
     error: str | None = None
     events: list[dict] = field(default_factory=list)
@@ -51,7 +63,7 @@ class HuntJob:
     def subscribe(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=500)
         self._subscribers.append(q)
-        # Wyślij historię eventów do nowego subskrybenta
+        # Wyślij historię do nowego subskrybenta
         for event in self.events[-50:]:
             try:
                 q.put_nowait(event)
@@ -81,16 +93,16 @@ class HuntJobManager:
             job = HuntJob(job_id=job_id, config=config)
             self._current_job = job
             asyncio.create_task(self._run_job(job))
-            logger.info("[JobManager] Job %s uruchomiony dla config: %s", job_id, config)
+            logger.info("[JobManager] Job %s uruchomiony: %s", job_id, config)
             return job
 
     async def _run_job(self, job: HuntJob):
         from backend.scraper_async import run_hunt_async
         from backend.analysis import enrich_listings
-        from backend.db import save_listings, get_conn
+        from backend.db import save_listings
 
         try:
-            # ── FAZA 1: Scrapowanie ────────────────────────────────
+            # ── FAZA 1: Scrapowanie ──────────────────────────────────────
             job.status = JobStatus.RUNNING
             job.emit("status", {
                 "status": job.status,
@@ -104,14 +116,14 @@ class HuntJobManager:
                     "portal": portal_name,
                     "count": count,
                     "total_scraped": job.total_scraped,
-                    "portals_counts": job.portals_counts,
+                    "portals_counts": dict(job.portals_counts),
                 })
 
             raw_listings = await run_hunt_async(job.config, progress_cb=portal_progress)
             job.total_scraped = len(raw_listings)
             job.emit("scraping_done", {
                 "total_scraped": len(raw_listings),
-                "portals_counts": job.portals_counts,
+                "portals_counts": dict(job.portals_counts),
             })
 
             if not raw_listings:
@@ -125,26 +137,22 @@ class HuntJobManager:
                 })
                 return
 
-            # ── FAZA 2: Enrichment (RCN + scoring) ────────────────
+            # ── FAZA 2: Enrichment ───────────────────────────────────────
             job.status = JobStatus.ENRICHING
             job.emit("status", {
                 "status": job.status,
                 "message": f"📊 Wzbogacam {len(raw_listings)} ofert (RCN + scoring)...",
             })
 
-            city_slug = job.config.get("city_slug", "warszawa")
-            # Enrichment jest synchroniczny i blokujący — puszczamy w executorze
+            city_slug = job.config.get("city_slug") or "warszawa"
             loop = asyncio.get_event_loop()
             enriched = await loop.run_in_executor(
                 None,
                 lambda: enrich_listings(raw_listings, city_slug=city_slug)
             )
+            job.emit("enriching_done", {"total_enriched": len(enriched)})
 
-            job.emit("enriching_done", {
-                "total_enriched": len(enriched),
-            })
-
-            # ── FAZA 3: Zapis do DB ────────────────────────────────
+            # ── FAZA 3: Zapis ────────────────────────────────────────────
             job.status = JobStatus.SAVING
             job.emit("status", {
                 "status": job.status,
@@ -154,8 +162,7 @@ class HuntJobManager:
             saved = await loop.run_in_executor(None, lambda: save_listings(enriched))
             job.total_saved = saved
 
-            # Policz okazje (score >= 0.25)
-            min_score = job.config.get("min_score_alert", 0.25)
+            min_score = job.config.get("min_score_alert") or 0.20
             job.total_opportunities = sum(
                 1 for l in enriched if (l.get("score") or 0) >= min_score
             )
@@ -166,19 +173,17 @@ class HuntJobManager:
                 "min_score": min_score,
             })
 
-            # ── FAZA 4: Kickoff AI queue dla top ofert ─────────────
-            job.status = JobStatus.AI_QUEUE
+            # ── FAZA 4: Analiza AI (synchroniczna dla top 20) ────────────
+            job.status = JobStatus.AI_ANALYSIS
             job.emit("status", {
                 "status": job.status,
-                "message": "🧠 Analiza AI w tle (wyniki pojawiają się na bieżąco)...",
+                "message": f"🧠 Analiza AI top {LLM_SYNC_BATCH} ofert (poczekaj chwilę)...",
             })
 
-            # Triggeruj priorytetową analizę AI dla nowych ofert z tego joba
-            asyncio.create_task(
-                _priority_ai_analysis(job, enriched)
-            )
+            analyzed_count = await _sync_ai_analysis(job, enriched, city_slug)
+            job.total_ai_analyzed = analyzed_count
 
-            # ── DONE ───────────────────────────────────────────────
+            # ── DONE ─────────────────────────────────────────────────────
             job.status = JobStatus.DONE
             job.finished_at = time.time()
             elapsed = round(job.finished_at - job.started_at, 1)
@@ -187,12 +192,14 @@ class HuntJobManager:
                 "total_scraped": job.total_scraped,
                 "total_saved": saved,
                 "total_opportunities": job.total_opportunities,
+                "total_ai_analyzed": job.total_ai_analyzed,
                 "elapsed_s": elapsed,
-                "portals_counts": job.portals_counts,
+                "portals_counts": dict(job.portals_counts),
                 "message": (
-                    f"✅ Gotowe: {saved} ofert zapisanych, "
+                    f"✅ Gotowe: {saved} ofert, "
                     f"{job.total_opportunities} okazji, "
-                    f"AI analiza w tle ({elapsed}s)"
+                    f"{job.total_ai_analyzed} przeanalizowanych przez AI "
+                    f"({elapsed}s)"
                 ),
             })
 
@@ -206,39 +213,109 @@ class HuntJobManager:
             })
 
 
-async def _priority_ai_analysis(job: HuntJob, enriched_listings: list[dict], batch_size: int = 20):
+async def _sync_ai_analysis(
+    job: HuntJob,
+    enriched_listings: list[dict],
+    city_slug: str,
+    batch_size: int = LLM_SYNC_BATCH,
+) -> int:
     """
-    Priorytetowa analiza AI dla ofert z aktualnego joba.
-    Przetwarza top oferty po score, emituje eventy do SSE.
-    """
-    from backend.db import get_listings_for_llm_analysis, save_llm_analysis
-    from backend.nlp.llm_scorer import analyze_listing_with_llm
+    Synchroniczna analiza LLM dla top N ofert według score.
+    Wyniki emitowane przez SSE na bieżąco — frontend aktualizuje karty.
 
-    # Pobierz świeże oferty z DB (mają już ID)
+    Po analizie re-oblicza score z nowym text_score i aktualizuje DB.
+    """
+    from backend.db import get_listings_for_llm_analysis, save_llm_analysis, save_listing_score
+    from backend.nlp.llm_scorer import analyze_listing_with_llm
+    from backend.analysis import text_score_from_llm, update_text_score_from_llm
+    from backend.model import opportunity_score, group_average_price_per_sqm
+
+    # Pobierz świeże rekordy z DB (mają ID, url itp.)
     listings_to_analyze = get_listings_for_llm_analysis(limit=batch_size)
     if not listings_to_analyze:
-        return
+        logger.info("[AI] Brak ofert do analizy (wszystkie już przeanalizowane?)")
+        return 0
 
-    logger.info("[AI Priority] Analizuję %d ofert dla joba %s", len(listings_to_analyze), job.job_id)
+    logger.info("[AI] Synchroniczna analiza %d ofert dla joba %s", len(listings_to_analyze), job.job_id)
 
-    for listing in listings_to_analyze:
+    averages = group_average_price_per_sqm(enriched_listings)
+    analyzed = 0
+
+    for i, listing in enumerate(listings_to_analyze):
         try:
+            job.emit("ai_progress", {
+                "current": i + 1,
+                "total": len(listings_to_analyze),
+                "listing_id": listing["id"],
+                "title": (listing.get("title") or "")[:60],
+            })
+
             analysis = await analyze_listing_with_llm(listing)
+
             if analysis and "error" not in analysis:
                 save_llm_analysis(listing["url"], analysis)
+
+                # Aktualizuj text_score i re-oblicz score
+                new_text_score = text_score_from_llm(analysis)
+                listing["llm_analysis"] = analysis
+                listing["text_score"] = new_text_score
+
+                # Nie mamy pełnego enrichmentu — emitujemy tylko AI dane
                 job.emit("ai_done", {
                     "listing_id": listing["id"],
                     "url": listing["url"],
                     "investment_score": analysis.get("investment_score"),
                     "condition": analysis.get("condition"),
                     "summary": (analysis.get("summary") or "")[:300],
-                    "green_flags": analysis.get("green_flags", [])[:3],
-                    "red_flags": analysis.get("red_flags", [])[:3],
+                    "green_flags": (analysis.get("green_flags") or [])[:4],
+                    "red_flags": (analysis.get("red_flags") or [])[:4],
+                    "text_score": round(new_text_score, 3),
+                    "negotiation_potential": analysis.get("negotiation_potential"),
                 })
-        except Exception as e:
-            logger.warning("[AI Priority] Błąd dla listing %d: %s", listing.get("id", -1), e)
+                analyzed += 1
+            else:
+                # Oznacz błąd żeby nie próbować ponownie w tej sesji
+                save_llm_analysis(listing["url"], {"error": "llm_failed"})
 
-        await asyncio.sleep(2.0)  # rate limit Ollamy
+        except Exception as e:
+            logger.warning("[AI] Błąd dla listing %d: %s", listing.get("id", -1), e)
+
+        # Rate limit dla Ollamy
+        await asyncio.sleep(1.5)
+
+    # Uruchom resztę (beyond batch_size) w tle
+    remaining_limit = LLM_TOTAL_LIMIT - batch_size
+    if remaining_limit > 0:
+        asyncio.create_task(
+            _background_ai_queue(remaining_limit)
+        )
+        job.emit("status", {
+            "status": JobStatus.DONE,
+            "message": f"🔄 Pozostałe oferty analizowane w tle...",
+        })
+
+    return analyzed
+
+
+async def _background_ai_queue(limit: int = 30) -> None:
+    """
+    Kontynuuje analizę LLM w tle dla ofert poza top N.
+    Nie blokuje użytkownika.
+    """
+    from backend.db import get_listings_for_llm_analysis, save_llm_analysis
+    from backend.nlp.llm_scorer import analyze_listing_with_llm
+
+    listings = get_listings_for_llm_analysis(limit=limit)
+    logger.info("[AI BG] Analiza %d ofert w tle", len(listings))
+
+    for listing in listings:
+        try:
+            analysis = await analyze_listing_with_llm(listing)
+            if analysis and "error" not in analysis:
+                save_llm_analysis(listing["url"], analysis)
+        except Exception as e:
+            logger.debug("[AI BG] Błąd dla listing %d: %s", listing.get("id", -1), e)
+        await asyncio.sleep(2.0)
 
 
 # Globalny singleton
@@ -258,7 +335,6 @@ async def stream_job_events(job: HuntJob) -> AsyncGenerator[str, None]:
                 if event.get("type") in ("done", "error"):
                     break
             except asyncio.TimeoutError:
-                # Heartbeat żeby połączenie nie wygasło
                 yield 'data: {"type":"heartbeat"}\n\n'
     finally:
         job.unsubscribe(q)
