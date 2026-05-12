@@ -8,8 +8,8 @@ from .nieruchomosci_online import search as no_search, available as no_available
 PORTAL_SCRAPERS = {
     "olx": olx_search,
     "otodom": otodom_search,
-    "morizon": morizon_search,
-    "gratka": gratka_search,
+    # "morizon": morizon_search,  # Wyłączone - błędy 403 / brak JSON API
+    # "gratka": gratka_search,   # Wyłączone - błędy 403 / brak JSON API
     "domiporta": domiporta_search,
     "nieruchomosci_online": no_search,
 }

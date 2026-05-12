@@ -55,7 +55,7 @@ def random_headers(extra: dict | None = None) -> dict:
 # Retry logic
 # ---------------------------------------------------------------------------
 
-RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+RETRYABLE_STATUS = {403, 429, 500, 502, 503, 504}
 RETRYABLE_EXCEPTIONS = (
     httpx.ConnectTimeout,
     httpx.ReadTimeout,
@@ -114,14 +114,13 @@ def fetch_html(
             client_kwargs["mounts"] = {"all://": httpx.HTTPTransport(proxy=proxy_url)}
 
         with httpx.Client(**client_kwargs) as client:
-            response = client.get(url, headers=headers)
+            # Refresh headers per attempt (for UA rotation)
+            current_headers = random_headers(extra_headers)
+            response = client.get(url, headers=current_headers)
 
             if response.status_code in RETRYABLE_STATUS:
                 logger.warning("[HTTP] %s → status %s, retry...", url, response.status_code)
                 raise RetryableHTTPError(response.status_code, url)
-            if response.status_code == 403:
-                logger.error("[HTTP] 403 Forbidden: %s — prawdopodobnie blokada scrapera", url)
-                return ""
             if response.status_code == 404:
                 logger.warning("[HTTP] 404 Not Found: %s", url)
                 return ""
@@ -151,18 +150,17 @@ async def fetch_html_async(
     """
     Asynchroniczna wersja — używać z istniejącym httpx.AsyncClient dla connection pooling.
     """
-    headers = random_headers(extra_headers)
-
     for attempt in range(1, attempts + 1):
+        headers = random_headers(extra_headers)
         try:
             response = await client.get(url, headers=headers)
             if response.status_code in RETRYABLE_STATUS:
-                wait = (2 ** attempt) + random.uniform(0, 1.5)
-                logger.warning("[HTTP async] %s → %s, czekam %.1fs", url, response.status_code, wait)
+                wait = (attempt * 5) + random.uniform(0, 5)
+                logger.warning("[HTTP async] %s → %s, retry %d/%d za %.1fs", url, response.status_code, attempt, attempts, wait)
                 await asyncio.sleep(wait)
                 continue
-            if response.status_code in (403, 404):
-                logger.warning("[HTTP async] %s → %s", url, response.status_code)
+            if response.status_code == 404:
+                logger.warning("[HTTP async] %s → 404", url)
                 return ""
             response.raise_for_status()
             return response.text

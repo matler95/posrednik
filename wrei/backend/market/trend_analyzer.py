@@ -6,6 +6,8 @@ import logging
 from statistics import median
 
 logger = logging.getLogger(__name__)
+ 
+_RCN_CACHE = {} # {(city, district, rooms, area): benchmark}
 
 
 def get_rcn_benchmark(
@@ -15,6 +17,11 @@ def get_rcn_benchmark(
     area: float | None = None,
     last_quarters: int = 2,
 ) -> float | None:
+    # 0. Sprawdź cache
+    cache_key = (city_slug, district, rooms, area)
+    if cache_key in _RCN_CACHE:
+        return _RCN_CACHE[cache_key]
+
     # Normalizacja pokoi
     if isinstance(rooms, str):
         mapping = {"ONE": 1, "TWO": 2, "THREE": 3, "FOUR": 4, "FIVE": 5}
@@ -70,6 +77,12 @@ def get_rcn_benchmark(
         result = _fetch("size BETWEEN %s AND %s", [area * 0.85, area * 1.15])
     
     cur.close(); conn.close()
+
+    # Zapisz do cache (max 1000 wpisów)
+    if len(_RCN_CACHE) > 1000:
+        _RCN_CACHE.clear()
+    _RCN_CACHE[cache_key] = result
+    
     return result
 
 

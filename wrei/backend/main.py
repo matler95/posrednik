@@ -55,8 +55,27 @@ async def startup():
         if ms_count == 0 and l_count > 10:
             logger.info("[Startup] Generuję market_stats...")
             await asyncio.get_event_loop().run_in_executor(None, generate_market_stats)
+            
+        # RCN Auto-ingest jeśli baza pusta
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM transaction_prices")
+        rcn_count = cur.fetchone()[0]
+        cur.close(); conn.close()
+        
+        if rcn_count < 100:
+            logger.info("[Startup] Mało danych RCN (%d). Pobieram ostatnie 90 dni...", rcn_count)
+            from backend.scrapers.deweloperuch import fetch_recent
+            from backend.db import save_transaction_prices
+            
+            def _rcn_task():
+                data = fetch_recent("warszawa", days=90)
+                save_transaction_prices(data)
+                logger.info("[Startup RCN] Pobrano %d transakcji.", len(data))
+                
+            asyncio.create_task(asyncio.to_thread(_rcn_task))
+            
     except Exception as e:
-        logger.warning("[Startup] market_stats init: %s", e)
+        logger.warning("[Startup] Init error: %s", e)
     
     asyncio.create_task(_llm_queue_loop())
     try:

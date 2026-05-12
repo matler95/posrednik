@@ -41,6 +41,39 @@ def normalize_rooms_value(value) -> int | None:
         return mapping.get(value.upper())
     return None
 
+
+def validate_listing(listing: dict) -> bool:
+    """
+    Sprawdza, czy oferta ma sensowne dane (nie jest anomalią).
+    Zwraca True, jeśli oferta przechodzi walidację.
+    """
+    price = listing.get("price")
+    area = listing.get("area")
+    url = listing.get("url")
+    title = listing.get("title")
+
+    if not url or not title:
+        return False
+
+    # 1. Zakresy bazowe
+    if not price or not (10_000 <= price <= 100_000_000):
+        return False
+    if not area or not (5 <= area <= 2000):
+        return False
+
+    # 2. Anomalie ceny za m2
+    psm = listing.get("price_per_m2")
+    if not psm and area > 0:
+        psm = price / area
+
+    if psm:
+        # Poniżej 2000 zł/m2 to błąd (chyba że dom, ale tu celujemy w mieszkania)
+        # Powyżej 100 000 zł/m2 to prawdopodobnie błąd przecinkowy
+        if not (2_000 <= psm <= 100_000):
+            return False
+
+    return True
+
 def room_matches(query, listing_rooms) -> bool:
     if query is None or query == "" or (isinstance(query, list) and len(query) == 0): 
         return True

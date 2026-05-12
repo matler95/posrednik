@@ -16,41 +16,25 @@ LLM_INTERVAL_SECONDS = float(os.getenv("LLM_INTERVAL_SECONDS", "2.0"))
 LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE", "10"))
 
 PROMPT_TEMPLATE = """\
-Jesteś ekspertem rynku nieruchomości z dostępem do danych transakcyjnych (RCN).
-Przeanalizuj ogłoszenie i odpowiedz WYŁĄCZNIE poprawnym JSON bez żadnego tekstu przed/po:
-
+Analyze the listing and return ONLY a JSON object (no text before/after):
 {{
   "condition": "nowy|dobry|sredni|remont",
-  "urgency_signals": ["lista sygnałów pilności: 'pilne', 'szybka sprzedaż' itp."],
-  "red_flags": ["ostrzeżenia: 'brak piwnicy', 'hałaśliwa ulica', 'pośrednik' itp."],
-  "green_flags": ["atuty: 'oferta bezpośrednia', 'nowe okna', 'blisko metra' itp."],
+  "urgency_signals": ["e.g. 'pilne', 'szybka sprzedaż'"],
+  "red_flags": ["e.g. 'hałaśliwa ulica', 'pośrednik'"],
+  "green_flags": ["e.g. 'metro', 'bezpośrednio'"],
   "renovation_cost_per_m2": null,
-  "location_quality": 6,
-  "investment_score": 6,
-  "negotiation_potential": 5,
-  "price_vs_market_comment": "1-2 zdania o cenie vs dane RCN",
-  "summary": "3-4 zdania po polsku — zwięzła ocena dla inwestora"
+  "location_quality": 1-10,
+  "investment_score": 1-10,
+  "negotiation_potential": 1-10,
+  "price_vs_market_comment": "1 sentence vs RCN data",
+  "summary": "3-4 sentences in POLISH - investment assessment"
 }}
 
-Skale: location_quality, investment_score, negotiation_potential — 1-10.
-renovation_cost_per_m2: szacowany koszt remontu w PLN/m² (null jeśli nie dotyczy).
-
---- DANE OGŁOSZENIA ---
-Tytuł: {title}
-Dzielnica: {district}
-Cena: {price} PLN | Metraż: {area} m² | Pokoje: {rooms}
-Cena/m²: {price_per_m2} PLN/m²
-Stan: {condition_hint}
-Piętro: {floor_info}
-Rok budowy: {year_built}
-
---- DANE RYNKOWE (RCN) ---
-Mediana transakcyjna dzielnicy: {rcn_benchmark} PLN/m²
-Trend CAGR 5 lat: {cagr_pct}%/rok
-Luka oferta vs transakcje: {transaction_gap_pct}% ({transaction_gap_sign})
-
---- OPIS OGŁOSZENIA ---
-{description}"""
+Data:
+Title: {title} | District: {district}
+Price: {price} PLN | Area: {area} m2 | Rooms: {rooms} | Price/m2: {price_per_m2}
+RCN Benchmark: {rcn_benchmark} | CAGR 5y: {cagr_pct}% | Gap: {transaction_gap_pct}% ({transaction_gap_sign})
+Desc: {description}"""
 
 
 def _build_prompt(listing: dict) -> str:
@@ -152,9 +136,9 @@ async def analyze_listing_with_llm(listing: dict) -> dict | None:
 async def run_llm_queue_once(batch_size: int = LLM_BATCH_SIZE) -> int:
     """
     Przetwarza jeden batch ofert z kolejki LLM.
-    Zwraca liczbę przetworzonych ofert.
+    Wykorzystuje nową kolumnę llm_error_count dla lepszego zarządzania błędami.
     """
-    from backend.db import get_listings_for_llm_analysis, save_llm_analysis
+    from backend.db import get_listings_for_llm_analysis, save_llm_analysis, increment_llm_error_count
 
     listings = get_listings_for_llm_analysis(limit=batch_size)
     if not listings:
@@ -163,6 +147,7 @@ async def run_llm_queue_once(batch_size: int = LLM_BATCH_SIZE) -> int:
     logger.info("[LLM Queue] Analizuję batch %d ofert...", len(listings))
     processed = 0
 
+    # Przetwarzaj sekwencyjnie (Ollama zazwyczaj nie lubi dużego paralelizmu na GPU)
     for listing in listings:
         try:
             analysis = await analyze_listing_with_llm(listing)
@@ -171,13 +156,15 @@ async def run_llm_queue_once(batch_size: int = LLM_BATCH_SIZE) -> int:
                 logger.debug("[LLM Queue] ✓ listing %d: score=%s",
                              listing.get("id"), analysis.get("investment_score"))
             else:
-                # Oznacz błąd żeby nie próbować w nieskończoność
-                save_llm_analysis(listing["url"], {"error": "parse_fail", "attempts": 1})
+                # Inkrementuj licznik błędów w DB
+                increment_llm_error_count(listing["id"])
+                logger.warning("[LLM Queue] ✗ Błąd analizy dla listing %d", listing.get("id"))
             processed += 1
         except Exception as e:
             logger.error("[LLM Queue] Błąd dla listing %d: %s", listing.get("id", -1), e)
+            increment_llm_error_count(listing.get("id"))
 
-        # Rate limit — nie przeciążaj Ollamy
+        # Rate limit
         await asyncio.sleep(LLM_INTERVAL_SECONDS)
 
     return processed

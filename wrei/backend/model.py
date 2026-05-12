@@ -176,6 +176,33 @@ def condition_multiplier(listing: dict) -> float:
     return 0.92  # nieznany stan
 
 
+def calculate_anomaly_score(listing: dict, rcn_benchmark: float | None = None) -> float:
+    """
+    Zwraca 1.0 jeśli oferta jest wysoce podejrzana (anomalia), 0.0 jeśli OK.
+    Anomalie to np. błędy w cenie (wpisana cena za m2 zamiast całości).
+    """
+    psm = price_per_square_meter(listing)
+    if not psm: return 0.0
+    
+    score = 0.0
+    
+    # 1. Cena drastycznie poniżej RCN (> 60%)
+    if rcn_benchmark and psm < rcn_benchmark * 0.4:
+        score = max(score, 0.8)
+        
+    # 2. Bardzo niska cena całkowita dla dużego metrażu
+    price = listing.get("price")
+    area = listing.get("area")
+    if price and area and price < 50_000 and area > 15:
+        score = max(score, 1.0)
+        
+    # 3. Cena/m2 niższa niż 3000 zł w Warszawie
+    if psm < 3000:
+        score = max(score, 0.9)
+        
+    return score
+
+
 # ---------------------------------------------------------------------------
 # Główna funkcja scoringu
 # ---------------------------------------------------------------------------
@@ -223,13 +250,18 @@ def calculate_preliminary_score(
     growth_bonus = value_growth_bonus(cagr)
     mult = condition_multiplier(listing)
 
+    # 3. Anomaly penalty
+    anomaly_penalty = calculate_anomaly_score(listing, effective_benchmark)
+
     base = (
-        price_gap    * 0.35
-        + txn_gap_pos * 0.30
-        + market_pos  * 0.15
-        + freshness   * 0.12
-        + direct      * 0.08
-    ) * mult + growth_bonus
+        (
+            price_gap    * 0.35
+            + txn_gap_pos * 0.30
+            + market_pos  * 0.15
+            + freshness   * 0.12
+            + direct      * 0.08
+        ) * mult + growth_bonus
+    ) * (1.0 - anomaly_penalty)
 
     return round(min(max(base, 0.0), 1.0), 4)
 
@@ -325,6 +357,7 @@ def score_breakdown(
             "growth_bonus": round(growth_bonus, 4),
             "text_boost": round(text_score * 0.08, 4),
             "photo_boost": round(photo_score * 0.05, 4),
+            "anomaly_penalty": round(calculate_anomaly_score(listing, effective_benchmark), 2),
         },
         "inputs": {
             "price_gap_pct": round(price_gap * 100, 1),

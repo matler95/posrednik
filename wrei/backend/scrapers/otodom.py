@@ -7,10 +7,8 @@ import re
 import logging
 
 from backend.scraper_utils import (
-    apply_filters,
-    fetch_html,
-    extract_price,
     extract_area_from_text,
+    validate_listing,
 )
 
 logger = logging.getLogger(__name__)
@@ -278,14 +276,21 @@ def normalize_listing(item: dict, source_url: str) -> dict | None:
     price = _extract_price(item)
     area = _extract_area(item)
 
-    # Wymagane pola
-    if not price or price < 10_000:
-        return None
-    if not area or area < 5:
-        return None
-
     url = _extract_url(item)
-    if not url:
+    
+    listing = {
+        "portal": "otodom",
+        "title": (item.get("title") or item.get("shortDescription") or "")[:200],
+        "price": price,
+        "area": area,
+        "district": _extract_district(item),
+        "rooms": _extract_rooms(item),
+        "price_per_m2": None, # Obliczy validate_listing lub my niżej
+        "url": url,
+    }
+
+    # Wstępna walidacja przed budowaniem reszty obiektu
+    if not validate_listing(listing):
         return None
 
     floor, total_floors = _extract_floor(item)

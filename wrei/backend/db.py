@@ -820,4 +820,17 @@ def get_hunt_job(job_id: str) -> dict | None:
     row = cur.fetchone()
     cur.close()
     conn.close()
-    return dict(zip(cols, row)) if row else None
+    return dict(zip(cols, row)) if row else None
+
+
+def increment_llm_error_count(listing_id: int) -> None:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        UPDATE listings
+        SET llm_error_count = llm_error_count + 1, updated_at = NOW()
+        WHERE id = %s
+    """, (listing_id,))
+    conn.commit()
+    cur.close()
+    conn.close()

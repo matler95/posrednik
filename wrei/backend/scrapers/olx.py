@@ -8,10 +8,8 @@ import re
 import logging
 
 from backend.scraper_utils import (
-    apply_filters,
-    fetch_html,
-    extract_price,
     extract_area_from_text,
+    validate_listing,
 )
 
 logger = logging.getLogger(__name__)
@@ -159,8 +157,6 @@ def _normalize_olx_listing(item: dict) -> dict | None:
         price = int(float(str(price).replace(" ", "")))
     except (ValueError, TypeError):
         return None
-    if not (10_000 < price < 50_000_000):
-        return None
 
     # Parametry
     params = item.get("params") or []
@@ -175,8 +171,6 @@ def _normalize_olx_listing(item: dict) -> dict | None:
             pass
     if not area:
         area = extract_area_from_text(item.get("title") or "")
-    if not area or area < 5:
-        return None
 
     # Pokoje
     rooms = _get_param(params, "rooms") or _get_param(params, "number_of_rooms")
@@ -191,8 +185,6 @@ def _normalize_olx_listing(item: dict) -> dict | None:
     url = item.get("url") or ""
     if url and not url.startswith("http"):
         url = f"https://www.olx.pl{url}"
-    if not url:
-        return None
 
     # Zdjęcia
     photos = item.get("photos") or item.get("images") or []
@@ -237,7 +229,7 @@ def _normalize_olx_listing(item: dict) -> dict | None:
 
     psm = round(price / area, 2) if area else None
 
-    return {
+    listing = {
         "portal": "olx",
         "title": (item.get("title") or "")[:200],
         "price": price,
@@ -247,6 +239,13 @@ def _normalize_olx_listing(item: dict) -> dict | None:
         "price_per_m2": psm,
         "url": url,
         "direct_offer": direct_offer,
+    }
+
+    if not validate_listing(listing):
+        return None
+
+    return {
+        **listing,
         "description": item.get("description") or "",
         "images": images[:8],
         "floor": floor,
