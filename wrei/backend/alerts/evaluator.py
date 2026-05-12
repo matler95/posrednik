@@ -186,7 +186,14 @@ def run_alert_check():
 
         for listing in matched[:5]:  # max 5 powiadomień per alert per run
             try:
+                from backend.db import create_price_alert
                 send_alert_notification(alert, listing)
                 mark_alert_sent(listing["id"], alert["id"])
+                # Log to price_alerts for UI history
+                create_price_alert(
+                    listing_id=listing["id"],
+                    alert_type="new_high_score" if (listing.get("score") or 0) > 0.25 else "watchlist_match",
+                    new_value=listing.get("price")
+                )
             except Exception:
                 logger.exception("[Alerts] Błąd wysyłania alertu %s dla %s", alert["name"], listing.get("url"))
