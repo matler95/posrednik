@@ -16,3 +16,17 @@ wrei/backend/market/__pycache__/__init__.cpython-312.pyc
 wrei/backend/market/__pycache__/trend_analyzer.cpython-312.pyc
 wrei/backend/nlp/__pycache__/extractor.cpython-312.pyc
 wrei/backend/scrapers/__pycache__/deweloperuch.cpython-312.pyc
+wrei/backend/api/__pycache__/alerts.cpython-312.pyc
+wrei/backend/api/__pycache__/hunt.cpython-312.pyc
+wrei/backend/api/__pycache__/listings.cpython-312.pyc
+wrei/backend/api/__pycache__/market.cpython-312.pyc
+wrei/backend/api/__pycache__/system.cpython-312.pyc
+wrei/backend/data/__pycache__/alerts.cpython-312.pyc
+wrei/backend/data/__pycache__/cache.cpython-312.pyc
+wrei/backend/data/__pycache__/hunt.cpython-312.pyc
+wrei/backend/data/__pycache__/listings.cpython-312.pyc
+wrei/backend/data/__pycache__/scrapes.cpython-312.pyc
+wrei/backend/data/__pycache__/stats.cpython-312.pyc
+wrei/backend/data/__pycache__/transactions.cpython-312.pyc
+wrei/backend/market/__pycache__/geocoder.cpython-312.pyc
+wrei/backend/cv/__pycache__/vision_scorer.cpython-312.pyc

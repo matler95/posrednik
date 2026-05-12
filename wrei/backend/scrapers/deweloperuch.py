@@ -137,6 +137,27 @@ WROCLAW_DISTRICT_PATTERNS: dict[str, list[str]] = {
     "Psie Pole":     [r"psie pole", r"karłowice", r"karlowice"],
 }
 
+WARSAW_TERYT_MAP: dict[str, str] = {
+    "146501": "Bemowo",
+    "146502": "Białołęka",
+    "146503": "Bielany",
+    "146504": "Mokotów",
+    "146505": "Ochota",
+    "146506": "Praga-Południe",
+    "146507": "Praga-Północ",
+    "146508": "Rembertów",
+    "146509": "Śródmieście",
+    "146510": "Targówek",
+    "146511": "Ursus",
+    "146512": "Ursynów",
+    "146513": "Wawer",
+    "146514": "Wesoła",
+    "146515": "Wilanów",
+    "146516": "Włochy",
+    "146517": "Wola",
+    "146518": "Żoliborz",
+}
+
 CITY_DISTRICT_PATTERNS: dict[str, dict[str, list[str]]] = {
     "warszawa": WARSAW_DISTRICT_PATTERNS,
     "krakow":   KRAKOW_DISTRICT_PATTERNS,
@@ -257,11 +278,21 @@ def _normalize(record: dict, city_slug: str) -> dict:
     invest_slug = invest.get("slug") or ""
 
     # Próbuj kilka źródeł tekstu dla lepszego geocodingu
-    district = (
-        extract_district_from_address(street_address, city_slug)
-        or extract_district_from_address(invest_slug.replace("-", " "), city_slug)
-        or extract_district_from_address(record.get("street") or "", city_slug)
-    )
+    district = None
+    
+    # 1. TERYT code from name (e.g. 146505_...) - 100% precision for Warsaw
+    rec_name = record.get("name") or ""
+    if city_slug == "warszawa" and rec_name.startswith("1465"):
+        teryt = rec_name[:6]
+        district = WARSAW_TERYT_MAP.get(teryt)
+
+    # 2. Regex fallback
+    if not district:
+        district = (
+            extract_district_from_address(street_address, city_slug)
+            or extract_district_from_address(invest_slug.replace("-", " "), city_slug)
+            or extract_district_from_address(record.get("street") or "", city_slug)
+        )
 
     return {
         "sale_rcn_id": record.get("sale_rcn_id"),
@@ -464,6 +495,15 @@ def get_district_coverage_stats(city_slug: str = "warszawa") -> dict:
         """, (city_slug,))
         top = [{"district": r[0], "count": r[1]} for r in cur.fetchall()]
 
+        cur.execute("""
+            SELECT year, COUNT(*) as cnt
+            FROM transaction_prices
+            WHERE city_slug = %s AND year IS NOT NULL
+            GROUP BY year
+            ORDER BY year DESC
+        """, (city_slug,))
+        yearly = [{"year": r[0], "count": r[1]} for r in cur.fetchall()]
+
         cur.close()
         conn.close()
 
@@ -477,6 +517,7 @@ def get_district_coverage_stats(city_slug: str = "warszawa") -> dict:
                 "coverage_pct": coverage,
                 "unique_districts": unique_districts,
                 "top_districts": top,
+                "yearly_breakdown": yearly,
             }
     except Exception as exc:
         logger.warning("[Deweloperuch] Stats error: %s", exc)

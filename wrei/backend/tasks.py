@@ -151,6 +151,30 @@ async def send_daily_digest_task(ctx):
     from backend.alerts.channels import send_daily_digest
     await asyncio.to_thread(send_daily_digest)
 
+async def import_rcn_history_task(ctx, city_slug: str, years: int):
+    from backend.scrapers.deweloperuch import iter_transactions
+    from backend.db import save_transaction_prices
+    from datetime import date, timedelta
+    
+    date_from = (date.today() - timedelta(days=years * 365)).isoformat()
+    logger.info("[Worker] Rozpoczynam pobieranie historii RCN (%d lat) dla %s", years, city_slug)
+    
+    batch = []
+    total_saved = 0
+    for tx in iter_transactions(city_slug, date_from=date_from):
+        batch.append(tx)
+        if len(batch) >= 500:
+            saved = save_transaction_prices(batch)
+            total_saved += saved
+            batch = []
+            await asyncio.sleep(0.5) # Throttle
+    
+    if batch:
+        saved = save_transaction_prices(batch)
+        total_saved += saved
+    
+    logger.info("[Worker] Zakończono import historii RCN: %d rekordów.", total_saved)
+
 async def startup(ctx):
     ctx['redis'] = await create_pool(RedisSettings(host=REDIS_HOST))
 
@@ -168,7 +192,8 @@ class WorkerSettings:
         update_market_stats_task,
         retrain_ml_task,
         check_alerts_task,
-        send_daily_digest_task
+        send_daily_digest_task,
+        import_rcn_history_task
     ]
     cron_jobs = [
         cron(crawl_all_sources_task, hour={6, 12, 18}, minute=0),

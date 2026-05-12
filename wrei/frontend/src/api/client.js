@@ -24,6 +24,7 @@ export const marketApi = {
   getDistricts: () => client.get('/market/districts'),
   ingest: (params) => client.post('/market/ingest', null, { params }),
   getRCN: (params) => client.get('/market/rcn-benchmark', { params }),
+  getRcnStats: (params) => client.get('/market/rcn-stats', { params }),
 };
 
 export const statsApi = {

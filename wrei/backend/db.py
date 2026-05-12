@@ -21,12 +21,12 @@ def init_db():
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute(\"\"\"
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS schema_migrations (
             filename TEXT PRIMARY KEY,
             applied_at TIMESTAMP DEFAULT NOW()
         )
-    \"\"\")
+    """)
     conn.commit()
 
     if migrations_dir.exists():
@@ -52,10 +52,10 @@ def _register_portals(cur, conn):
     try:
         from backend.scrapers import AVAILABLE_PORTALS
         for portal in AVAILABLE_PORTALS:
-            cur.execute(\"\"\"
+            cur.execute("""
                 INSERT INTO portals (name) VALUES (%s)
                 ON CONFLICT (name) DO NOTHING
-            \"\"\", (portal,))
+            """, (portal,))
         conn.commit()
     except Exception as e:
         logger.warning("[DB] _register_portals error: %s", e)

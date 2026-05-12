@@ -10,18 +10,21 @@ import { BarChart2, TrendingUp, Map, LayoutGrid, Info } from 'lucide-react';
 export default function Stats() {
   const [districts, setDistricts] = useState([]);
   const [trend, setTrend] = useState([]);
+  const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [selectedDistrict, setSelectedDistrict] = useState(null);
 
   useEffect(() => {
     const fetchStats = async () => {
       try {
-        const [distRes, trendRes] = await Promise.all([
+        const [distRes, trendRes, rcnRes] = await Promise.all([
           marketApi.getDistricts(),
-          marketApi.getTrend({ district: selectedDistrict })
+          marketApi.getTrend({ district: selectedDistrict }),
+          marketApi.getRcnStats()
         ]);
         setDistricts(distRes.data);
         setTrend(trendRes.data.quarterly_trend);
+        setStats(rcnRes.data);
       } catch (err) {
         console.error(err);
       } finally {
@@ -53,9 +56,37 @@ export default function Stats() {
             <BarChart2 className="text-premium-accent w-8 h-8" />
             Analityka Rynkowa
           </h1>
-          <p className="text-premium-muted mt-1">
-            Dane transakcyjne na podstawie bazy RCN (Deweloperuch)
-          </p>
+          <div className="mt-4 flex flex-wrap gap-3">
+            {stats && (
+              <>
+                <div className="flex flex-col">
+                  <span className="text-[10px] text-premium-muted uppercase font-bold mb-1">Baza RCN (Ogółem)</span>
+                  <div className="flex gap-2">
+                    <span className="bg-emerald-500/10 text-emerald-400 text-xs font-black px-3 py-1 rounded border border-emerald-500/20">
+                      {stats.total?.toLocaleString()}
+                    </span>
+                    <span className="bg-blue-500/10 text-blue-400 text-xs font-black px-3 py-1 rounded border border-blue-500/20">
+                      {stats.coverage_pct}% Pokrycia
+                    </span>
+                  </div>
+                </div>
+                
+                <div className="h-10 w-px bg-slate-700 mx-2 self-end" />
+
+                <div className="flex flex-col">
+                  <span className="text-[10px] text-premium-muted uppercase font-bold mb-1">Rozkład Lat</span>
+                  <div className="flex gap-2">
+                    {stats.yearly_breakdown?.map(y => (
+                      <div key={y.year} className="bg-slate-800/50 border border-slate-700 rounded px-2 py-1 flex flex-col items-center min-w-[50px]">
+                        <span className="text-[9px] text-premium-muted leading-none">{y.year}</span>
+                        <span className="text-[11px] text-white font-bold">{y.count.toLocaleString()}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
         </div>
         <button
           onClick={handleIngest}

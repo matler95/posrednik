@@ -91,23 +91,30 @@ async def rcn_benchmark(
 
 @router.post("/ingest")
 async def market_ingest(city_slug: str = Query("warszawa"), days: int = Query(30)):
-    from backend.scrapers.deweloperuch import fetch_recent
-    async def _task():
-        data = fetch_recent(city_slug, days=days)
-        saved = save_transaction_prices(data)
-        logger.info("[Ingest] Zapisano %d transakcji dla %s", saved, city_slug)
-    asyncio.create_task(_task())
-    return {"status": "started", "city_slug": city_slug, "days": days}
+    from arq import create_pool
+    from arq.connections import RedisSettings
+    import os
+
+    REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+    redis = await create_pool(RedisSettings(host=REDIS_HOST))
+    # We use years=0 as a flag for recent ingest if we want, or just pass a small float
+    await redis.enqueue_job('import_rcn_history_task', city_slug, round(days/365, 3))
+    await redis.close()
+    
+    return {"status": "queued", "city_slug": city_slug, "days": days}
 
 @router.post("/ingest-history")
 async def market_ingest_history(city_slug: str = Query("warszawa"), years: int = Query(5)):
-    from backend.scrapers.deweloperuch import fetch_historical
-    async def _task():
-        data = fetch_historical(city_slug, years=years)
-        saved = save_transaction_prices(data)
-        logger.info("[Ingest-history] Zapisano %d transakcji historycznych dla %s", saved, city_slug)
-    asyncio.create_task(_task())
-    return {"status": "started", "city_slug": city_slug, "years": years, "note": "Może trwać kilka minut"}
+    from arq import create_pool
+    from arq.connections import RedisSettings
+    import os
+
+    REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+    redis = await create_pool(RedisSettings(host=REDIS_HOST))
+    await redis.enqueue_job('import_rcn_history_task', city_slug, years)
+    await redis.close()
+    
+    return {"status": "queued", "city_slug": city_slug, "years": years}
 
 @router.get("/rcn-stats")
 async def rcn_stats(city_slug: str = Query("warszawa")):

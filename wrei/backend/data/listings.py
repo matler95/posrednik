@@ -289,12 +289,12 @@ def get_listings(
         params.append(max_area)
 
     params.extend([limit, offset])
-    cur.execute(f\"\"\"
+    cur.execute(f"""
         SELECT * FROM listings
         WHERE {" AND ".join(where)}
         ORDER BY score DESC NULLS LAST, created_at DESC
         LIMIT %s OFFSET %s
-    \"\"\", params)
+    """, params)
     cols = [d[0] for d in cur.description]
     rows = [dict(zip(cols, row)) for row in cur.fetchall()]
     cur.close()
@@ -350,12 +350,12 @@ def save_photo_analysis(listing_id: int, analysis: dict) -> None:
 def get_new_listings(hours: int = 24, limit: int = 50) -> list[dict]:
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute(f\"\"\"
+    cur.execute(f"""
         SELECT * FROM listings
         WHERE created_at >= NOW() - interval '%s hours'
         ORDER BY preliminary_score DESC NULLS LAST, created_at DESC
         LIMIT %s
-    \"\"\", (hours, limit))
+    """, (hours, limit))
     cols = [d[0] for d in cur.description]
     rows = [dict(zip(cols, row)) for row in cur.fetchall()]
     cur.close()

@@ -50,7 +50,7 @@ async def _analyze_image_with_vision(image_path: Path, client: httpx.AsyncClient
             "stream": False,
             "format": "json",
         }
-        resp = await client.post(OLLAMA_URL, json=payload, timeout=60.0)
+        resp = await client.post(OLLAMA_URL, json=payload, timeout=180.0)
         if resp.status_code != 200:
             logger.warning("[Vision] Ollama błąd %d dla %s", resp.status_code, image_path.name)
             return None

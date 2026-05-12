@@ -11,28 +11,30 @@ def save_transaction_prices(transactions: list[dict]) -> int:
     conn = get_conn()
     cur = conn.cursor()
 
-    records = [
-        (
-            t["sale_rcn_id"],
-            t["city"],
-            t["city_slug"],
-            t.get("street_address"),
-            t.get("invest_slug"),
-            t.get("district"),
-            t.get("amount"),
-            t.get("amount_sqm"),
-            t.get("size"),
-            t.get("rooms_number"),
-            t.get("floor_number"),
-            t.get("creation_date"),
-            t.get("year"),
-            t.get("quarter"),
-            t.get("month"),
-            bool(t.get("is_flipped", False)),
-        )
-        for t in transactions
-        if t.get("sale_rcn_id") and t.get("amount_sqm")
-    ]
+    seen_ids = set()
+    records = []
+    for t in transactions:
+        rcn_id = t.get("sale_rcn_id")
+        if rcn_id and rcn_id not in seen_ids and t.get("amount_sqm"):
+            seen_ids.add(rcn_id)
+            records.append((
+                rcn_id,
+                t["city"],
+                t["city_slug"],
+                t.get("street_address"),
+                t.get("invest_slug"),
+                t.get("district"),
+                t.get("amount"),
+                t.get("amount_sqm"),
+                t.get("size"),
+                t.get("rooms_number"),
+                t.get("floor_number"),
+                t.get("creation_date"),
+                t.get("year"),
+                t.get("quarter"),
+                t.get("month"),
+                bool(t.get("is_flipped", False)),
+            ))
 
     if not records:
         cur.close()

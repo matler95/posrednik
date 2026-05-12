@@ -60,14 +60,10 @@ async def hunt_status():
     rcn_count = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM transaction_prices WHERE district IS NOT NULL")
     rcn_with_district = cur.fetchone()[0]
-    cur.close()
-    conn.close()
-
     cur.execute("SELECT * FROM hunt_jobs ORDER BY started_at DESC LIMIT 1")
     job_row = cur.fetchone()
     active_job_data = None
     if job_row:
-        # Map row to dict (assuming columns are id, status, config, total_scraped, total_saved, total_ai_analyzed, error, portals_counts, started_at, finished_at)
         cols = [d[0] for d in cur.description]
         job_db = dict(zip(cols, job_row))
         active_job_data = {
@@ -79,6 +75,9 @@ async def hunt_status():
             "portals_counts": job_db["portals_counts"],
             "error": job_db["error"],
         }
+
+    cur.close()
+    conn.close()
 
     return {
         "config": cfg,
