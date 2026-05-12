@@ -21,16 +21,49 @@ logger = logging.getLogger(__name__)
 # Connection
 # ---------------------------------------------------------------------------
 
+from psycopg2 import pool
+
+_pool = None
+
+def init_pool():
+    global _pool
+    if _pool is None:
+        _pool = pool.ThreadedConnectionPool(
+            minconn=2,
+            maxconn=10,
+            dbname=os.getenv("POSTGRES_DB", "wrei"),
+            user=os.getenv("POSTGRES_USER", "postgres"),
+            password=os.getenv("POSTGRES_PASSWORD", "postgres"),
+            host=os.getenv("POSTGRES_HOST", "db"),
+            port=int(os.getenv("POSTGRES_PORT", 5432)),
+        )
+
+class PooledConnectionWrapper:
+    def __init__(self):
+        if _pool is None:
+            init_pool()
+        self.conn = _pool.getconn()
+        register_default_jsonb(self.conn)
+
+    def __getattr__(self, name):
+        return getattr(self.conn, name)
+
+    def close(self):
+        if _pool is not None and self.conn is not None:
+            _pool.putconn(self.conn)
+            self.conn = None
+
+    def commit(self):
+        self.conn.commit()
+
+    def rollback(self):
+        self.conn.rollback()
+
+    def cursor(self, *args, **kwargs):
+        return self.conn.cursor(*args, **kwargs)
+
 def get_conn():
-    conn = psycopg2.connect(
-        dbname=os.getenv("POSTGRES_DB", "wrei"),
-        user=os.getenv("POSTGRES_USER", "postgres"),
-        password=os.getenv("POSTGRES_PASSWORD", "postgres"),
-        host=os.getenv("POSTGRES_HOST", "db"),
-        port=int(os.getenv("POSTGRES_PORT", 5432)),
-    )
-    register_default_jsonb(conn)  # JSONB → dict automatycznie
-    return conn
+    return PooledConnectionWrapper()
 
 
 # ---------------------------------------------------------------------------

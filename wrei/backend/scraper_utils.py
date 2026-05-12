@@ -84,14 +84,24 @@ def apply_filters(listings: list[dict], min_price=None, max_price=None, min_area
     return filtered
 
 def deduplicate_listings(listings: list[dict]) -> list[dict]:
-    seen = set()
-    unique = []
+    best = {}
     for listing in listings:
         key = listing.get("url") or listing.get("title")
-        if key in seen: continue
-        seen.add(key)
-        unique.append(listing)
-    return unique
+        if not key: continue
+        
+        if key in best:
+            curr_updated = listing.get("updated_at")
+            best_updated = best[key].get("updated_at")
+            
+            if curr_updated and best_updated:
+                if curr_updated > best_updated:
+                    best[key] = listing
+            elif curr_updated and not best_updated:
+                best[key] = listing
+        else:
+            best[key] = listing
+            
+    return list(best.values())
 
 def extract_price(text: str) -> int | None:
     if not text: return None

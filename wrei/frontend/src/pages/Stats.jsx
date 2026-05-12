@@ -43,7 +43,7 @@ export default function Stats() {
     }
   };
 
-  if (loading) return <div className="animate-pulse space-y-8"><div className="h-96 card-premium" /><div className="h-96 card-premium" /></div>;
+  if (loading) return <div className="animate-pulse space-y-8"><div className="h-96 card card-accent" /><div className="h-96 card card-accent" /></div>;
 
   return (
     <div className="space-y-8 animate-in fade-in duration-700">
@@ -68,7 +68,7 @@ export default function Stats() {
       {/* Main Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         {/* District Comparison */}
-        <div className="card-premium h-[500px] flex flex-col">
+        <div className="card card-accent h-[500px] flex flex-col">
           <div className="flex justify-between items-center mb-6">
             <h3 className="text-lg font-bold text-white flex items-center gap-2">
               <LayoutGrid className="w-5 h-5 text-premium-accent" /> Ceny w Dzielnicach
@@ -100,7 +100,7 @@ export default function Stats() {
         </div>
 
         {/* Historical Trend */}
-        <div className="card-premium h-[500px] flex flex-col">
+        <div className="card card-accent h-[500px] flex flex-col">
           <div className="flex justify-between items-center mb-6">
             <h3 className="text-lg font-bold text-white flex items-center gap-2">
               <TrendingUp className="w-5 h-5 text-emerald-400" /> Trend Historyczny
@@ -152,7 +152,7 @@ export default function Stats() {
       </div>
 
       {/* District Heatmap Table */}
-      <div className="card-premium overflow-hidden">
+      <div className="card card-accent overflow-hidden">
         <div className="p-6 border-b border-slate-700/50 flex justify-between items-center">
           <h3 className="text-lg font-bold text-white flex items-center gap-2">
             <Map className="w-5 h-5 text-premium-accent" /> Zestawienie Dzielnicowe

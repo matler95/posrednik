@@ -75,7 +75,7 @@ export default function Settings() {
     }
   };
 
-  if (loading) return <div className="animate-pulse space-y-8"><div className="h-96 card-premium" /></div>;
+  if (loading) return <div className="animate-pulse space-y-8"><div className="h-96 card card-accent" /></div>;
 
   return (
     <div className="max-w-4xl mx-auto space-y-8 animate-in fade-in duration-500">
@@ -99,7 +99,7 @@ export default function Settings() {
       <form onSubmit={handleSave} className="space-y-8">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
           {/* Basic Params */}
-          <div className="card-premium space-y-6">
+          <div className="card card-accent space-y-6">
             <h2 className="text-lg font-bold text-white border-b border-slate-700/50 pb-4">Parametry Podstawowe</h2>
             
             <div className="space-y-4">
@@ -175,7 +175,7 @@ export default function Settings() {
           </div>
 
           {/* Portals */}
-          <div className="card-premium space-y-6">
+          <div className="card card-accent space-y-6">
             <h2 className="text-lg font-bold text-white border-b border-slate-700/50 pb-4">Źródła (Portale)</h2>
             <div className="grid grid-cols-2 gap-3">
                {AVAILABLE_PORTALS.map(portal => (
@@ -210,7 +210,7 @@ export default function Settings() {
         </div>
 
         {/* Districts */}
-        <div className="card-premium space-y-6">
+        <div className="card card-accent space-y-6">
           <div className="flex justify-between items-center border-b border-slate-700/50 pb-4">
             <h2 className="text-lg font-bold text-white">Dzielnice (Puste = Całe Miasto)</h2>
             <button 

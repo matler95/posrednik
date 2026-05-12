@@ -216,18 +216,29 @@ def opportunity_score(
         district = listing.get("district")
         effective_benchmark = get_market_stats_benchmark(city_slug, district)
 
-    # 1. ML/avg price gap
-    if not price or not ml_estimate or ml_estimate <= 0:
-        price_gap = 0.0
-    else:
-        price_gap = max(0.0, (ml_estimate - price) / ml_estimate)
+    # 1. & 2. ML i RCN gaps (z proxy dla świeżych instalacji)
+    market_pos_val = market_position(listing, averages) or 0.0
+    is_fresh_install = (not ml_estimate or ml_estimate <= 0) and not effective_benchmark
 
-    # 2. RCN transaction gap (tylko pozytywna część dla wagi bazowej)
-    txn_gap_raw = transaction_gap_ratio(listing, effective_benchmark)
-    txn_gap_pos = max(0.0, txn_gap_raw)
+    if is_fresh_install:
+        # Proxy: używamy market_position (bieżące oferty) dla składowych ML i RCN
+        proxy_val = max(0.0, market_pos_val)
+        price_gap = proxy_val
+        txn_gap_pos = proxy_val
+        txn_gap_raw = market_pos_val
+    else:
+        # 1. ML/avg price gap
+        if not price or not ml_estimate or ml_estimate <= 0:
+            price_gap = 0.0
+        else:
+            price_gap = max(0.0, (ml_estimate - price) / ml_estimate)
+
+        # 2. RCN transaction gap (tylko pozytywna część dla wagi bazowej)
+        txn_gap_raw = transaction_gap_ratio(listing, effective_benchmark)
+        txn_gap_pos = max(0.0, txn_gap_raw)
 
     # 3. Pozycja rynkowa vs bieżące oferty
-    market_pos = max(0.0, market_position(listing, averages) or 0.0)
+    market_pos = max(0.0, market_pos_val)
 
     # 4. Świeżość ogłoszenia
     days = listing.get("days_on_market") or 0
@@ -291,13 +302,23 @@ def score_breakdown(
         if effective_benchmark:
             used_fallback = True
 
-    price_gap = 0.0
-    if price and ml_estimate and ml_estimate > 0:
-        price_gap = max(0.0, (ml_estimate - price) / ml_estimate)
+    market_pos_val = market_position(listing, averages) or 0.0
+    is_fresh_install = (not ml_estimate or ml_estimate <= 0) and not effective_benchmark
 
-    txn_gap_raw = transaction_gap_ratio(listing, effective_benchmark)
-    txn_gap_pos = max(0.0, txn_gap_raw)
-    market_pos = max(0.0, market_position(listing, averages) or 0.0)
+    if is_fresh_install:
+        proxy_val = max(0.0, market_pos_val)
+        price_gap = proxy_val
+        txn_gap_raw = market_pos_val
+        txn_gap_pos = proxy_val
+    else:
+        price_gap = 0.0
+        if price and ml_estimate and ml_estimate > 0:
+            price_gap = max(0.0, (ml_estimate - price) / ml_estimate)
+        txn_gap_raw = transaction_gap_ratio(listing, effective_benchmark)
+        txn_gap_pos = max(0.0, txn_gap_raw)
+
+    market_pos = max(0.0, market_pos_val)
+
     days = listing.get("days_on_market") or 0
     freshness = 1.0 if days < 1 else (0.5 if days < 3 else 0.0)
     direct = 1.0 if listing.get("direct_offer") else 0.0

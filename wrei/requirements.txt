@@ -23,12 +23,13 @@ spacy
 # torch           # CPU-only: pip install torch --index-url https://download.pytorch.org/whl/cpu
 # Pillow
 
-# ── Dashboard ──────────────────────────────────────────────────────────────
-streamlit
-pandas
-folium
-streamlit-folium
-plotly
+# ── Dashboard (Legacy - Removed) ──────────────────────────────────────────
+# streamlit
+# pandas
+# folium
+# streamlit-folium
+# plotly
+
 
 # ── Telegram (Faza 5) ──────────────────────────────────────────────────────
 python-telegram-bot
