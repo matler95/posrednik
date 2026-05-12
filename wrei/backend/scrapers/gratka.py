@@ -53,7 +53,7 @@ def extract_area(text: str) -> float | None:
 
 
 def extract_listings_from_html(html: str) -> list[dict]:
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(html, "html.parser")
     listings = []
 
     # Gratka often uses article tags for offers

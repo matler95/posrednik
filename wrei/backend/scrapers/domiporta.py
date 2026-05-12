@@ -34,17 +34,20 @@ def build_domiporta_url(
 
 
 def extract_json_payload(html: str) -> dict:
-    patterns = [
-        r'<script id="__NEXT_DATA__"[^>]*>(\{.+?\})</script>',
-        r'__NEXT_DATA__[^=]*=\s*(\{.+?\});',
-    ]
-    for pattern in patterns:
+    """Wyciąga __NEXT_DATA__ z HTML Domiporta."""
+    try:
+        pattern = r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>'
         match = re.search(pattern, html, re.S)
         if match:
-            try:
-                return json.loads(match.group(1))
-            except json.JSONDecodeError:
-                continue
+            return json.loads(match.group(1))
+        
+        # Fallback
+        pattern_js = r'__NEXT_DATA__\s*=\s*(\{.*?\});'
+        match_js = re.search(pattern_js, html, re.S)
+        if match_js:
+            return json.loads(match_js.group(1))
+    except Exception as e:
+        print(f"[Domiporta] Błąd ekstrakcji JSON: {e}")
     return {}
 
 

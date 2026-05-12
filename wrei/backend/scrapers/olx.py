@@ -86,18 +86,21 @@ def build_olx_url(
 # ---------------------------------------------------------------------------
 
 def _extract_next_data(html: str) -> dict:
-    """Wyciąga __NEXT_DATA__ z HTML OLX."""
-    patterns = [
-        r'<script id="__NEXT_DATA__"[^>]*>(\{.+?\})</script>',
-        r'__NEXT_DATA__\s*=\s*(\{.+?\})\s*;',
-    ]
-    for pattern in patterns:
-        m = re.search(pattern, html, re.S)
-        if m:
-            try:
-                return json.loads(m.group(1))
-            except json.JSONDecodeError:
-                continue
+    """Wyciąga __NEXT_DATA__ z HTML OLX w sposób odporny na zmiany."""
+    try:
+        # Próbujemy znaleźć tag script o dowolnym ID zawierający NEXT_DATA
+        pattern = r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>'
+        match = re.search(pattern, html, re.S)
+        if match:
+            return json.loads(match.group(1))
+        
+        # Fallback: szukamy samej zmiennej w kodzie JS
+        pattern_js = r'__NEXT_DATA__\s*=\s*(\{.*?\});'
+        match_js = re.search(pattern_js, html, re.S)
+        if match_js:
+            return json.loads(match_js.group(1))
+    except Exception as e:
+        logger.warning("[OLX] Błąd ekstrakcji JSON: %s", e)
     return {}
 
 

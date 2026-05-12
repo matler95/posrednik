@@ -52,7 +52,7 @@ def build_morizon_url(
 
 
 def extract_listings_from_html(html):
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(html, "html.parser")
     listings = []
 
     # Morizon listings are often in <section> or <article> with specific classes

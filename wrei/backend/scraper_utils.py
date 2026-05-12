@@ -7,12 +7,14 @@ from urllib.parse import quote_plus
 from backend.http_client import fetch_html as _fetch_html_core
 from backend.rate_limiter import rate_limiter
 
-DEBUG_DIR = Path(os.getenv("WREI_DEBUG_DIR", "/tmp/wrei_debug"))
+DEBUG_DIR = Path(os.getcwd()) / "debug_scrapers"
 
 def fetch_html(url: str, portal: str = "default", timeout: float = 20.0) -> str:
     rate_limiter.wait(portal)
     html = _fetch_html_core(url, timeout=timeout)
-    if not html:
+    if html:
+        save_debug_html(url, portal, html)
+    else:
         _save_debug(url, portal, b"[EMPTY RESPONSE]")
     return html
 
