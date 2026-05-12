@@ -204,6 +204,7 @@ def save_listings(listings: list[dict]):
             l.get("city_slug", "warszawa"),
             l.get("lat"),
             l.get("lng"),
+            l.get("preliminary_score"),
         ))
 
     execute_values(cur, """
@@ -213,7 +214,7 @@ def save_listings(listings: list[dict]):
             description, images, features, floor, total_floors, year_built,
             heating, condition, building_type, ownership, raw_location,
             rcn_benchmark, transaction_gap, cagr_5y, text_score, photo_score,
-            city_slug, lat, lng
+            city_slug, lat, lng, preliminary_score
         ) VALUES %s
         ON CONFLICT (url) DO UPDATE SET
             portal          = EXCLUDED.portal,
@@ -246,6 +247,8 @@ def save_listings(listings: list[dict]):
             city_slug       = EXCLUDED.city_slug,
             lat             = EXCLUDED.lat,
             lng             = EXCLUDED.lng,
+            preliminary_score = EXCLUDED.preliminary_score,
+            score_version   = listings.score_version + 1,
             days_on_market  = EXTRACT(DAY FROM NOW() - listings.first_seen)::INT,
             updated_at      = NOW()
     """, records)
@@ -344,7 +347,7 @@ def get_hunt_listings(limit: int = 100, offset: int = 0) -> list[dict]:
             )
             AND (
                 jsonb_array_length(cfg.config->'rooms') = 0
-                OR l.rooms = ANY(ARRAY(SELECT jsonb_array_elements_text(cfg.config->'rooms')))
+                OR l.rooms::TEXT = ANY(ARRAY(SELECT jsonb_array_elements_text(cfg.config->'rooms')))
             )
             AND (
                 (cfg.config->>'direct_only')::boolean = FALSE
@@ -765,3 +768,56 @@ def save_photo_analysis(listing_id: int, analysis: dict) -> None:
     conn.commit()
     cur.close()
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Stage 1 Core additions
+# ---------------------------------------------------------------------------
+
+def get_new_listings(hours: int = 24, limit: int = 50) -> list[dict]:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT * FROM listings
+        WHERE created_at >= NOW() - interval '%s hours'
+        ORDER BY preliminary_score DESC NULLS LAST, created_at DESC
+        LIMIT %s
+    """, (hours, limit))
+    cols = [d[0] for d in cur.description]
+    rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+    cur.close()
+    conn.close()
+    return rows
+
+
+def save_hunt_job(job_id: str, status: str, config: dict, 
+                  total_scraped: int = 0, total_saved: int = 0, 
+                  total_ai: int = 0, error: str = None, portals_counts: dict = None):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO hunt_jobs (id, status, config, total_scraped, total_saved, total_ai_analyzed, error, portals_counts, started_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+        ON CONFLICT (id) DO UPDATE SET
+            status = EXCLUDED.status,
+            total_scraped = EXCLUDED.total_scraped,
+            total_saved = EXCLUDED.total_saved,
+            total_ai_analyzed = EXCLUDED.total_ai_analyzed,
+            error = EXCLUDED.error,
+            portals_counts = EXCLUDED.portals_counts,
+            finished_at = CASE WHEN EXCLUDED.status IN ('done', 'error') THEN NOW() ELSE hunt_jobs.finished_at END
+    """, (job_id, status, Json(config), total_scraped, total_saved, total_ai, error, Json(portals_counts or {})))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def get_hunt_job(job_id: str) -> dict | None:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM hunt_jobs WHERE id = %s", (job_id,))
+    cols = [d[0] for d in cur.description]
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return dict(zip(cols, row)) if row else None

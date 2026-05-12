@@ -11,6 +11,7 @@ from backend.model import (
     group_average_price_per_sqm,
     market_position,
     opportunity_score,
+    calculate_preliminary_score,
     score_breakdown,
     price_gap_ratio,
     price_per_square_meter,
@@ -213,7 +214,13 @@ def enrich_listings(listings: list[dict], city_slug: str = "warszawa") -> list[d
         listing["cagr_5y"] = cagr
         listing["transaction_gap"] = transaction_gap_ratio(listing, rcn_benchmark)
 
-        # Composite score (z fallback gdy brak RCN)
+        # Composite scores (z fallback gdy brak RCN)
+        listing["preliminary_score"] = calculate_preliminary_score(
+            listing, averages, ml_est,
+            rcn_benchmark=rcn_benchmark,
+            cagr=cagr,
+            city_slug=city_slug,
+        )
         listing["score"] = opportunity_score(
             listing, averages, ml_est,
             rcn_benchmark=rcn_benchmark,

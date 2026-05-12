@@ -180,7 +180,7 @@ def condition_multiplier(listing: dict) -> float:
 # Główna funkcja scoringu
 # ---------------------------------------------------------------------------
 
-def opportunity_score(
+def calculate_preliminary_score(
     listing: dict,
     averages: dict,
     ml_estimate: int | None,
@@ -189,28 +189,11 @@ def opportunity_score(
     city_slug: str = "warszawa",
 ) -> float:
     """
-    Composite opportunity score 0-1.
-
-    NAPRAWKA: Gdy brak rcn_benchmark (NULL z DB), używa market_stats jako fallback
-    zamiast zerowania składowej txn_gap (0.30).
-
-    Wagi bazowe (suma = 1.0):
-      price_gap  0.35
-      txn_gap    0.30
-      market_pos 0.15
-      freshness  0.12
-      direct     0.08
-
-    AI boost (addytywny):
-      text_score  max +8%
-      photo_score max +5%
-
-    Mnożnik stanu: 0.70–1.00
-    CAGR bonus: addytywny max +0.10
+    Oblicza wynik bazowy (preliminary) BEZ AI boost. 0-1.
     """
     price = listing.get("price")
 
-    # NAPRAWKA: Fallback benchmark gdy brak RCN
+    # Fallback benchmark gdy brak RCN
     effective_benchmark = rcn_benchmark
     if not effective_benchmark:
         district = listing.get("district")
@@ -221,49 +204,25 @@ def opportunity_score(
     is_fresh_install = (not ml_estimate or ml_estimate <= 0) and not effective_benchmark
 
     if is_fresh_install:
-        # Proxy: używamy market_position (bieżące oferty) dla składowych ML i RCN
         proxy_val = max(0.0, market_pos_val)
         price_gap = proxy_val
         txn_gap_pos = proxy_val
-        txn_gap_raw = market_pos_val
     else:
-        # 1. ML/avg price gap
         if not price or not ml_estimate or ml_estimate <= 0:
             price_gap = 0.0
         else:
             price_gap = max(0.0, (ml_estimate - price) / ml_estimate)
 
-        # 2. RCN transaction gap (tylko pozytywna część dla wagi bazowej)
         txn_gap_raw = transaction_gap_ratio(listing, effective_benchmark)
         txn_gap_pos = max(0.0, txn_gap_raw)
 
-    # 3. Pozycja rynkowa vs bieżące oferty
     market_pos = max(0.0, market_pos_val)
-
-    # 4. Świeżość ogłoszenia
     days = listing.get("days_on_market") or 0
     freshness = 1.0 if days < 1 else (0.5 if days < 3 else 0.0)
-
-    # 5. Oferta bezpośrednia
     direct = 1.0 if listing.get("direct_offer") else 0.0
-
-    # 6. AI text score
-    raw_text = listing.get("text_score")
-    has_text = raw_text is not None and float(raw_text) > 0
-    text_score = float(raw_text or 0)
-
-    # 7. Photo score
-    raw_photo = listing.get("photo_score")
-    has_photo = raw_photo is not None and float(raw_photo) > 0
-    photo_score = float(raw_photo or 0)
-
-    # 8. CAGR bonus
     growth_bonus = value_growth_bonus(cagr)
-
-    # 9. Condition multiplier
     mult = condition_multiplier(listing)
 
-    # Wynik bazowy
     base = (
         price_gap    * 0.35
         + txn_gap_pos * 0.30
@@ -272,13 +231,33 @@ def opportunity_score(
         + direct      * 0.08
     ) * mult + growth_bonus
 
-    # AI boost (addytywny, nie zastępuje bazy)
-    if has_text:
-        base += text_score * 0.08
-    if has_photo:
-        base += photo_score * 0.05
+    return round(min(max(base, 0.0), 1.0), 4)
+
+
+def opportunity_score(
+    listing: dict,
+    averages: dict,
+    ml_estimate: int | None,
+    rcn_benchmark: float | None = None,
+    cagr: float | None = None,
+    city_slug: str = "warszawa",
+) -> float:
+    """
+    Composite opportunity score 0-1 (Preliminary + AI Boost).
+    """
+    base = calculate_preliminary_score(listing, averages, ml_estimate, rcn_benchmark, cagr, city_slug)
+
+    # AI boost (addytywny)
+    raw_text = listing.get("text_score")
+    if raw_text is not None and float(raw_text) > 0:
+        base += float(raw_text) * 0.08
+
+    raw_photo = listing.get("photo_score")
+    if raw_photo is not None and float(raw_photo) > 0:
+        base += float(raw_photo) * 0.05
 
     return round(min(max(base, 0.0), 1.0), 4)
+
 
 
 def score_breakdown(

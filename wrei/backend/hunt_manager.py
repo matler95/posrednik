@@ -89,7 +89,7 @@ class HuntJobManager:
 
     async def start_job(self, config: dict) -> HuntJob:
         async with self._lock:
-            job_id = str(uuid.uuid4())[:8]
+            job_id = str(uuid.uuid4())
             job = HuntJob(job_id=job_id, config=config)
             self._current_job = job
             asyncio.create_task(self._run_job(job))
@@ -99,11 +99,25 @@ class HuntJobManager:
     async def _run_job(self, job: HuntJob):
         from backend.scraper_async import run_hunt_async
         from backend.analysis import enrich_listings
-        from backend.db import save_listings
+        from backend.db import save_listings, save_hunt_job
+
+        def _persist():
+            try:
+                save_hunt_job(
+                    job.job_id, job.status, job.config,
+                    total_scraped=job.total_scraped,
+                    total_saved=job.total_saved,
+                    total_ai=job.total_ai_analyzed,
+                    error=job.error,
+                    portals_counts=job.portals_counts
+                )
+            except Exception as ex:
+                logger.warning("[JobManager] DB persistence error: %s", ex)
 
         try:
             # ── FAZA 1: Scrapowanie ──────────────────────────────────────
             job.status = JobStatus.RUNNING
+            _persist()
             job.emit("status", {
                 "status": job.status,
                 "message": "🔍 Skanowanie portali...",
@@ -118,6 +132,7 @@ class HuntJobManager:
                     "total_scraped": job.total_scraped,
                     "portals_counts": dict(job.portals_counts),
                 })
+                _persist()
 
             raw_listings = await run_hunt_async(job.config, progress_cb=portal_progress)
             job.total_scraped = len(raw_listings)
@@ -153,6 +168,7 @@ class HuntJobManager:
 
             # FIX: emituj enriching_done (było pominięte w oryginale)
             job.emit("enriching_done", {"total_enriched": len(enriched)})
+            _persist()
 
             # ── FAZA 3: Zapis ────────────────────────────────────────────
             job.status = JobStatus.SAVING
@@ -174,6 +190,7 @@ class HuntJobManager:
                 "total_opportunities": job.total_opportunities,
                 "min_score": min_score,
             })
+            _persist()
 
             # ── FAZA 4: Analiza AI (synchroniczna dla top 20) ────────────
             job.status = JobStatus.AI_ANALYSIS
@@ -184,6 +201,7 @@ class HuntJobManager:
 
             analyzed_count = await _sync_ai_analysis(job, enriched, city_slug)
             job.total_ai_analyzed = analyzed_count
+            _persist()
 
             # ── DONE ─────────────────────────────────────────────────────
             job.status = JobStatus.DONE
@@ -204,6 +222,7 @@ class HuntJobManager:
                     f"({elapsed}s)"
                 ),
             })
+            _persist()
 
         except Exception as e:
             logger.exception("[JobManager] Błąd joba %s: %s", job.job_id, e)
@@ -213,6 +232,7 @@ class HuntJobManager:
                 "error": str(e),
                 "message": f"❌ Błąd: {e}",
             })
+            _persist()
 
 
 async def _sync_ai_analysis(

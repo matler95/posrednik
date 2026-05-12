@@ -21,7 +21,7 @@ from fastapi.responses import StreamingResponse
 from backend.db import (
     get_hunt_config, get_hunt_listings, get_listing_by_id,
     get_listing_price_history, get_listings, init_db, save_hunt_config,
-    get_conn,
+    get_conn, get_new_listings, get_hunt_job,
 )
 
 logger = logging.getLogger(__name__)
@@ -170,6 +170,30 @@ async def hunt_status():
     }
 
 
+@app.get("/hunt/job/{job_id}")
+async def hunt_job_detail(job_id: str):
+    """Szczegóły konkretnego joba z bazy (lub aktywnego)."""
+    job_db = get_hunt_job(job_id)
+    if job_db:
+        return _serialize(job_db)
+    
+    from backend.hunt_manager import hunt_manager
+    active = hunt_manager.current_job
+    if active and active.job_id == job_id:
+        return {
+            "id": active.job_id,
+            "status": active.status,
+            "config": active.config,
+            "total_scraped": active.total_scraped,
+            "total_saved": active.total_saved,
+            "total_ai_analyzed": active.total_ai_analyzed,
+            "portals_counts": active.portals_counts,
+            "started_at": active.started_at,
+        }
+    
+    raise HTTPException(status_code=404, detail="Job nie znaleziony")
+
+
 @app.get("/hunt/results")
 async def hunt_results(
     limit: int = Query(50, ge=1, le=200),
@@ -232,6 +256,13 @@ async def listings_endpoint(
         min_price=min_price, max_price=max_price,
         min_area=min_area, max_area=max_area,
     )
+    return {"count": len(rows), "listings": [_serialize(r) for r in rows]}
+
+
+@app.get("/listings/new")
+async def listings_new(hours: int = Query(24, ge=1, le=168)):
+    """Zwraca najnowsze oferty z ostatnich N godzin, posortowane po preliminary_score."""
+    rows = get_new_listings(hours=hours)
     return {"count": len(rows), "listings": [_serialize(r) for r in rows]}
 
 
