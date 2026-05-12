@@ -12,23 +12,13 @@ logger = logging.getLogger(__name__)
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434/api/chat")
 MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
-LLM_INTERVAL_SECONDS = float(os.getenv("LLM_INTERVAL_SECONDS", "2.0"))
+LLM_INTERVAL_SECONDS = float(os.getenv("LLM_INTERVAL_SECONDS", "1.0"))
 LLM_BATCH_SIZE = int(os.getenv("LLM_BATCH_SIZE", "10"))
+LLM_TIMEOUT = 45.0
 
 PROMPT_TEMPLATE = """\
-Analyze the listing and return ONLY a JSON object (no text before/after):
-{{
-  "condition": "nowy|dobry|sredni|remont",
-  "urgency_signals": ["e.g. 'pilne', 'szybka sprzedaż'"],
-  "red_flags": ["e.g. 'hałaśliwa ulica', 'pośrednik'"],
-  "green_flags": ["e.g. 'metro', 'bezpośrednio'"],
-  "renovation_cost_per_m2": null,
-  "location_quality": 1-10,
-  "investment_score": 1-10,
-  "negotiation_potential": 1-10,
-  "price_vs_market_comment": "1 sentence vs RCN data",
-  "summary": "3-4 sentences in POLISH - investment assessment"
-}}
+Analyze the listing and return ONLY a JSON object (no text before/after).
+Example: {{"condition": "dobry", "investment_score": 8, "summary": "Mieszkanie blisko metra, dobra cena..."}}
 
 Data:
 Title: {title} | District: {district}
@@ -66,7 +56,7 @@ def _build_prompt(listing: dict) -> str:
         cagr_pct=cagr_str,
         transaction_gap_pct=txn_pct,
         transaction_gap_sign=txn_sign,
-        description=(listing.get("description") or "brak opisu")[:3000],
+        description=(listing.get("description") or "brak opisu")[:1500],
     )
 
 
@@ -75,7 +65,7 @@ async def analyze_listing_with_llm(listing: dict) -> dict | None:
     prompt = _build_prompt(listing)
 
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
             response = await client.post(OLLAMA_URL, json={
                 "model": MODEL,
                 "messages": [{"role": "user", "content": prompt}],
@@ -145,27 +135,31 @@ async def run_llm_queue_once(batch_size: int = LLM_BATCH_SIZE) -> int:
         return 0
 
     logger.info("[LLM Queue] Analizuję batch %d ofert...", len(listings))
-    processed = 0
+    
+    # Przetwarzaj w małych batchach równolegle (np. 3 naraz)
+    semaphore = asyncio.Semaphore(3)
 
-    # Przetwarzaj sekwencyjnie (Ollama zazwyczaj nie lubi dużego paralelizmu na GPU)
-    for listing in listings:
-        try:
-            analysis = await analyze_listing_with_llm(listing)
-            if analysis and "error" not in analysis:
-                save_llm_analysis(listing["url"], analysis)
-                logger.debug("[LLM Queue] ✓ listing %d: score=%s",
-                             listing.get("id"), analysis.get("investment_score"))
-            else:
-                # Inkrementuj licznik błędów w DB
-                increment_llm_error_count(listing["id"])
-                logger.warning("[LLM Queue] ✗ Błąd analizy dla listing %d", listing.get("id"))
-            processed += 1
-        except Exception as e:
-            logger.error("[LLM Queue] Błąd dla listing %d: %s", listing.get("id", -1), e)
-            increment_llm_error_count(listing.get("id"))
+    async def _analyze_and_save(listing):
+        async with semaphore:
+            try:
+                analysis = await analyze_listing_with_llm(listing)
+                if analysis and "error" not in analysis:
+                    save_llm_analysis(listing["url"], analysis)
+                    logger.debug("[LLM Queue] ✓ listing %d: score=%s",
+                                 listing.get("id"), analysis.get("investment_score"))
+                    return True
+                else:
+                    increment_llm_error_count(listing["id"])
+                    logger.warning("[LLM Queue] ✗ Błąd analizy dla listing %d", listing.get("id"))
+                    return False
+            except Exception as e:
+                logger.error("[LLM Queue] Błąd dla listing %d: %s", listing.get("id", -1), e)
+                increment_llm_error_count(listing.get("id"))
+                return False
 
-        # Rate limit
-        await asyncio.sleep(LLM_INTERVAL_SECONDS)
+    tasks = [_analyze_and_save(l) for l in listings]
+    results = await asyncio.gather(*tasks)
+    processed = sum(1 for r in results if r)
 
     return processed
 

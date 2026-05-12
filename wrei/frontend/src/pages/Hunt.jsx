@@ -5,8 +5,9 @@ import {
   Target, Play, RefreshCw, Settings, Filter, ExternalLink,
   TrendingDown, TrendingUp, Zap, AlertCircle, User, Building,
   ChevronDown, ChevronUp, MapPin, Maximize2, Hash, Info,
-  Clock, BarChart2, CheckCircle, XCircle, Layers,
+  Clock, BarChart2, CheckCircle, XCircle, Layers, Map as MapIcon
 } from 'lucide-react';
+import ListingMap from '../components/ListingMap';
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -772,6 +773,7 @@ export default function Hunt() {
   const [minScore, setMinScore] = useState(null);
   const [alert, setAlert] = useState(null);
   const [aiUpdates, setAiUpdates] = useState({});
+  const [showMap, setShowMap] = useState(false);
   const closeStreamRef = useRef(null);
 
   const fetchData = useCallback(async () => {
@@ -932,6 +934,13 @@ export default function Hunt() {
               <Settings size={14} /> Profil
             </button>
           </Link>
+          <button 
+            className="btn btn-ghost" 
+            onClick={() => setShowMap(!showMap)}
+            style={{ padding: '8px 14px', fontSize: 13, color: showMap ? 'var(--accent)' : 'inherit' }}
+          >
+            <MapIcon size={14} /> {showMap ? 'Ukryj mapę' : 'Widok mapy'}
+          </button>
           <button
             className="btn btn-primary"
             onClick={handleStartHunt}
@@ -947,6 +956,13 @@ export default function Hunt() {
 
       {/* Data quality warning */}
       <DataQualityBanner status={status} />
+
+      {/* Map View */}
+      {showMap && (
+        <div className="fade-in">
+          <ListingMap listings={listings} />
+        </div>
+      )}
 
       {/* Alert */}
       {alert && (

@@ -30,6 +30,10 @@ export const statsApi = {
   get: () => client.get('/stats'),
 };
 
+export const alertsApi = {
+  get: (params) => client.get('/alerts', { params }),
+};
+
 // SSE helper
 export function createHuntStream(jobId, onEvent, onDone, onError) {
   const url = `${BASE}/hunt/stream/${jobId}`;

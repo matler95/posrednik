@@ -173,24 +173,52 @@ export default function Stats() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-700/50">
-              {districts.map((d) => (
-                <tr
-                  key={d.district}
-                  className="hover:bg-slate-800/30 transition-colors cursor-pointer"
-                  onClick={() => setSelectedDistrict(d.district)}
-                >
-                  <td className="px-6 py-4 font-bold text-white">{d.district}</td>
-                  <td className="px-6 py-4 text-right text-slate-300">{Math.round(d.rcn_median).toLocaleString()} zł</td>
-                  <td className="px-6 py-4 text-right text-slate-300">{Math.round(d.offer_avg).toLocaleString()} zł</td>
-                  <td className="px-6 py-4 text-right text-premium-muted">{d.count}</td>
-                  <td className="px-6 py-4 text-center">
-                    <span className={cn(
-                      "inline-block w-2 h-2 rounded-full",
-                      d.count > 50 ? "bg-emerald-500" : "bg-amber-500"
-                    )} />
-                  </td>
-                </tr>
-              ))}
+              {districts.map((d) => {
+                const maxMedian = Math.max(...districts.map(x => x.rcn_median || 0));
+                const intensity = d.rcn_median ? (d.rcn_median / maxMedian) : 0;
+                // Heatmap color from slate-900 to blue-900
+                const bgColor = `rgba(59, 130, 246, ${intensity * 0.15})`;
+                
+                return (
+                  <tr
+                    key={d.district}
+                    className="hover:bg-slate-800/50 transition-colors cursor-pointer group"
+                    onClick={() => setSelectedDistrict(d.district)}
+                    style={{ backgroundColor: bgColor }}
+                  >
+                    <td className="px-6 py-4 font-bold text-white group-hover:text-premium-accent transition-colors">
+                      {d.district}
+                    </td>
+                    <td className="px-6 py-4 text-right">
+                      <span className="text-white font-mono font-bold">
+                        {Math.round(d.rcn_median).toLocaleString()}
+                      </span>
+                      <span className="text-[10px] text-premium-muted ml-1">zł</span>
+                    </td>
+                    <td className="px-6 py-4 text-right">
+                      <span className="text-slate-300 font-mono">
+                        {Math.round(d.offer_avg).toLocaleString()}
+                      </span>
+                      <span className="text-[10px] text-premium-muted ml-1">zł</span>
+                    </td>
+                    <td className="px-6 py-4 text-right text-premium-muted font-mono">
+                      {d.count}
+                    </td>
+                    <td className="px-6 py-4 text-center">
+                      <div className="flex justify-center items-center gap-1.5">
+                        <span className={cn(
+                          "w-2 h-2 rounded-full",
+                          d.count > 50 ? "bg-emerald-500 shadow-[0_0_8px_#10b981]" : 
+                          d.count > 10 ? "bg-amber-500" : "bg-red-500"
+                        )} />
+                        <span className="text-[10px] text-premium-muted uppercase font-bold">
+                          {d.count > 50 ? "Stable" : d.count > 10 ? "Partial" : "Weak"}
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

@@ -189,6 +189,12 @@ async def hunt_status():
     }
 
 
+@app.get("/alerts")
+async def fetch_alerts(limit: int = 50):
+    from backend.db import get_alerts
+    return get_alerts(limit=limit)
+
+
 @app.get("/hunt/job/{job_id}")
 async def hunt_job_detail(job_id: str):
     """Szczegóły konkretnego joba z bazy (lub aktywnego)."""
@@ -479,6 +485,52 @@ async def geocode_missing(city_slug: str = Query("warszawa"), limit: int = Query
 
 
 # ─── Stats / health ───────────────────────────────────────────────────────────
+
+@app.get("/health")
+async def health_check():
+    """System health monitor: DB, Ollama, Scheduler."""
+    status = {"status": "ok", "components": {}}
+    
+    # 1. Database check
+    try:
+        from backend.db import get_conn
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.close(); conn.close()
+        status["components"]["database"] = "ok"
+    except Exception as e:
+        status["status"] = "error"
+        status["components"]["database"] = f"error: {str(e)}"
+        
+    # 2. Ollama check
+    try:
+        import httpx
+        from backend.nlp.llm_scorer import OLLAMA_URL
+        # Try to get version or simple tag check
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            # Strip /api/chat from OLLAMA_URL to get base
+            base_url = OLLAMA_URL.rsplit('/', 2)[0]
+            resp = await client.get(f"{base_url}/api/tags")
+            if resp.status_code == 200:
+                status["components"]["ollama"] = "ok"
+            else:
+                status["components"]["ollama"] = f"status: {resp.status_code}"
+    except Exception as e:
+        status["components"]["ollama"] = f"unreachable: {str(e)}"
+        
+    # 3. Scheduler check
+    try:
+        from backend.scheduler import scheduler
+        if scheduler and scheduler.running:
+            status["components"]["scheduler"] = "running"
+        else:
+            status["components"]["scheduler"] = "stopped"
+    except Exception:
+        status["components"]["scheduler"] = "unknown"
+
+    return status
+
 
 @app.get("/stats")
 async def stats():

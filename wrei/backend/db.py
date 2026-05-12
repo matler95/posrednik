@@ -381,11 +381,15 @@ def get_listings_for_llm_analysis(limit: int = 10) -> list[dict]:
         WITH cfg AS (SELECT config FROM hunt_config WHERE id = 1)
         SELECT l.* FROM listings l, cfg
         WHERE l.llm_analysis IS NULL
+          AND (l.llm_error_count IS NULL OR l.llm_error_count < 3)
           AND l.price <= COALESCE((cfg.config->>'max_price')::int, 9999999)
           AND l.price >= COALESCE((cfg.config->>'min_price')::int, 0)
-          AND l.area <= COALESCE((cfg.config->>'max_area')::numeric, 9999)
-          AND l.area >= COALESCE((cfg.config->>'min_area')::numeric, 0)
         ORDER BY
+            CASE 
+                WHEN l.score >= 0.3 THEN 1
+                WHEN l.score >= 0.15 THEN 2
+                ELSE 3
+            END,
             l.score DESC NULLS LAST
         LIMIT %s
     """, (limit,))
@@ -834,3 +838,19 @@ def increment_llm_error_count(listing_id: int) -> None:
     conn.commit()
     cur.close()
     conn.close()
+
+def get_alerts(limit: int = 50) -> list[dict]:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT a.*, l.title, l.url, l.price, l.area, l.district, l.score, l.images
+        FROM price_alerts a
+        JOIN listings l ON a.listing_id = l.id
+        ORDER BY a.triggered_at DESC
+        LIMIT %s
+    """, (limit,))
+    cols = [d[0] for d in cur.description]
+    rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+    cur.close()
+    conn.close()
+    return rows
