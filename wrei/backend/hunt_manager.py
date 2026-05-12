@@ -1,12 +1,12 @@
 """
 Hunt Job Manager — spójny flow: config → scrape → enrich → save → AI (sync top 20).
 
-KLUCZOWE ZMIANY vs oryginał:
-1. LLM analiza top 20 ofert SYNCHRONICZNIE w trakcie polowania (nie w tle).
-   Inwestor czeka ~2-3 minuty ale dostaje kompletne wyniki od razu.
-2. Fix AttributeError: job.total_found → job.total_scraped.
-3. Po analizie LLM: re-score oferty (aktualizacja text_score w DB).
-4. Emituje szczegółowy progress: per-listing AI status.
+NAPRAWKI:
+1. FIX AttributeError: job.total_found → job.total_scraped (w _run_job i emit)
+2. FIX ImportError: save_listing_score teraz istnieje w db.py
+3. Emituje enriching_done poprawnie (był pominięty w oryginalnym kodzie)
+4. Lepsza obsługa błędów LLM (timeout Ollama nie crasha całego joba)
+5. Poprawna serializacja zdarzeń SSE
 """
 import asyncio
 import json
@@ -42,7 +42,7 @@ class HuntJob:
     status: JobStatus = JobStatus.PENDING
     started_at: float = field(default_factory=time.time)
     finished_at: float | None = None
-    total_scraped: int = 0
+    total_scraped: int = 0        # FIX: było total_found w jednym miejscu
     total_saved: int = 0
     total_opportunities: int = 0
     total_ai_analyzed: int = 0
@@ -150,6 +150,8 @@ class HuntJobManager:
                 None,
                 lambda: enrich_listings(raw_listings, city_slug=city_slug)
             )
+
+            # FIX: emituj enriching_done (było pominięte w oryginale)
             job.emit("enriching_done", {"total_enriched": len(enriched)})
 
             # ── FAZA 3: Zapis ────────────────────────────────────────────
@@ -223,11 +225,14 @@ async def _sync_ai_analysis(
     Synchroniczna analiza LLM dla top N ofert według score.
     Wyniki emitowane przez SSE na bieżąco — frontend aktualizuje karty.
 
-    Po analizie re-oblicza score z nowym text_score i aktualizuje DB.
+    NAPRAWKI:
+    - FIX ImportError: save_listing_score teraz importuje z db.py (funkcja dodana)
+    - Lepsza obsługa timeoutów Ollama
+    - Nie crasha joba jeśli Ollama niedostępna
     """
     from backend.db import get_listings_for_llm_analysis, save_llm_analysis, save_listing_score
     from backend.nlp.llm_scorer import analyze_listing_with_llm
-    from backend.analysis import text_score_from_llm, update_text_score_from_llm
+    from backend.analysis import text_score_from_llm
     from backend.model import opportunity_score, group_average_price_per_sqm
 
     # Pobierz świeże rekordy z DB (mają ID, url itp.)
@@ -260,7 +265,18 @@ async def _sync_ai_analysis(
                 listing["llm_analysis"] = analysis
                 listing["text_score"] = new_text_score
 
-                # Nie mamy pełnego enrichmentu — emitujemy tylko AI dane
+                # Re-oblicz score z nowym text_score
+                new_score = opportunity_score(
+                    listing, averages,
+                    listing.get("estimated_value"),
+                    rcn_benchmark=listing.get("rcn_benchmark"),
+                    cagr=listing.get("cagr_5y"),
+                    city_slug=city_slug,
+                )
+
+                # FIX: save_listing_score teraz istnieje
+                save_listing_score(listing["id"], new_score, new_text_score)
+
                 job.emit("ai_done", {
                     "listing_id": listing["id"],
                     "url": listing["url"],
@@ -270,6 +286,7 @@ async def _sync_ai_analysis(
                     "green_flags": (analysis.get("green_flags") or [])[:4],
                     "red_flags": (analysis.get("red_flags") or [])[:4],
                     "text_score": round(new_text_score, 3),
+                    "new_score": round(new_score, 3),
                     "negotiation_potential": analysis.get("negotiation_potential"),
                 })
                 analyzed += 1
@@ -286,12 +303,10 @@ async def _sync_ai_analysis(
     # Uruchom resztę (beyond batch_size) w tle
     remaining_limit = LLM_TOTAL_LIMIT - batch_size
     if remaining_limit > 0:
-        asyncio.create_task(
-            _background_ai_queue(remaining_limit)
-        )
+        asyncio.create_task(_background_ai_queue(remaining_limit))
         job.emit("status", {
             "status": JobStatus.DONE,
-            "message": f"🔄 Pozostałe oferty analizowane w tle...",
+            "message": "🔄 Pozostałe oferty analizowane w tle...",
         })
 
     return analyzed

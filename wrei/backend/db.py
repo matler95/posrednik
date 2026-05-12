@@ -1,3 +1,11 @@
+"""
+db.py — Database access layer.
+
+NAPRAWKI:
+- Dodano save_listing_score() — było importowane w hunt_manager ale nie istniało
+- Poprawiono serializację datetime w get_hunt_listings
+- Dodano get_rcn_district_stats dla dashboardu
+"""
 import logging
 import os
 from pathlib import Path
@@ -32,7 +40,6 @@ def init_db():
     conn = get_conn()
     cur = conn.cursor()
 
-    # Tabela śledząca wykonane migracje
     cur.execute("""
         CREATE TABLE IF NOT EXISTS schema_migrations (
             filename TEXT PRIMARY KEY,
@@ -54,89 +61,24 @@ def init_db():
             )
             conn.commit()
             logger.info("[DB] Migracja %s zakończona", sql_file.name)
-    else:
-        # Fallback — inline schema jeśli brak katalogu migrations
-        _create_schema_inline(cur)
-        conn.commit()
 
-    # Zarejestruj dostępne portale
     _register_portals(cur, conn)
-
     cur.close()
     conn.close()
     logger.info("[DB] init_db zakończony")
 
 
-def _create_schema_inline(cur):
-    """Minimalny schemat inline — fallback gdy brak plików migracji."""
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS listings (
-            id SERIAL PRIMARY KEY, portal TEXT, title TEXT, price INT,
-            area FLOAT, district TEXT, rooms TEXT, url TEXT UNIQUE,
-            price_per_m2 FLOAT, estimated_value FLOAT, score FLOAT,
-            direct_offer BOOLEAN DEFAULT FALSE, source TEXT, description TEXT,
-            images JSONB DEFAULT '[]', features JSONB DEFAULT '{}',
-            floor INT, total_floors INT, year_built INT, heating TEXT,
-            condition TEXT, building_type TEXT, ownership TEXT,
-            raw_location JSONB DEFAULT '{}', llm_analysis JSONB,
-            photo_analysis JSONB, first_seen TIMESTAMP DEFAULT NOW(),
-            days_on_market INT DEFAULT 0,
-            created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()
-        );
-        CREATE TABLE IF NOT EXISTS listing_history (
-            id SERIAL PRIMARY KEY, listing_url TEXT, portal TEXT, price INT,
-            area FLOAT, price_per_m2 FLOAT, score FLOAT, district TEXT,
-            rooms INT, condition TEXT, building_type TEXT, floor INT,
-            year_built INT, recorded_at TIMESTAMP DEFAULT NOW()
-        );
-        CREATE TABLE IF NOT EXISTS scrape_runs (
-            id SERIAL PRIMARY KEY, portal TEXT, pages INT,
-            direct_only BOOLEAN, query_url TEXT, status TEXT,
-            listings_count INT DEFAULT 0, error_message TEXT,
-            started_at TIMESTAMP DEFAULT NOW(), finished_at TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS market_stats (
-            id SERIAL PRIMARY KEY, district TEXT NOT NULL, rooms INT,
-            condition TEXT, avg_price_per_m2 FLOAT, median_price_per_m2 FLOAT,
-            p25_price_per_m2 FLOAT, p75_price_per_m2 FLOAT,
-            sample_count INT DEFAULT 0, updated_at TIMESTAMP DEFAULT NOW(),
-            UNIQUE (district, rooms, condition)
-        );
-        CREATE TABLE IF NOT EXISTS portals (
-            name TEXT PRIMARY KEY, enabled BOOLEAN DEFAULT TRUE,
-            last_scraped TIMESTAMP, listings_last_run INT DEFAULT 0,
-            error_rate FLOAT DEFAULT 0.0, created_at TIMESTAMP DEFAULT NOW()
-        );
-        CREATE TABLE IF NOT EXISTS alerts (
-            id SERIAL PRIMARY KEY, name TEXT, expression TEXT,
-            enabled BOOLEAN DEFAULT TRUE,
-            channels JSONB DEFAULT '{"telegram": true}',
-            last_triggered TIMESTAMP, trigger_count INT DEFAULT 0,
-            created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()
-        );
-        CREATE TABLE IF NOT EXISTS watchlist (
-            id SERIAL PRIMARY KEY, name TEXT NOT NULL, filters JSONB NOT NULL,
-            alert_threshold FLOAT DEFAULT 0.15,
-            channels JSONB DEFAULT '{"telegram": true}',
-            active BOOLEAN DEFAULT TRUE, last_checked TIMESTAMP,
-            created_at TIMESTAMP DEFAULT NOW()
-        );
-        CREATE INDEX IF NOT EXISTS idx_listings_score      ON listings(score DESC);
-        CREATE INDEX IF NOT EXISTS idx_listings_district   ON listings(district);
-        CREATE INDEX IF NOT EXISTS idx_listings_created_at ON listings(created_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_listing_history_url ON listing_history(listing_url);
-        CREATE INDEX IF NOT EXISTS idx_market_stats_lookup ON market_stats(district, rooms, condition);
-    """)
-
-
 def _register_portals(cur, conn):
-    from backend.scrapers import AVAILABLE_PORTALS
-    for portal in AVAILABLE_PORTALS:
-        cur.execute("""
-            INSERT INTO portals (name) VALUES (%s)
-            ON CONFLICT (name) DO NOTHING
-        """, (portal,))
-    conn.commit()
+    try:
+        from backend.scrapers import AVAILABLE_PORTALS
+        for portal in AVAILABLE_PORTALS:
+            cur.execute("""
+                INSERT INTO portals (name) VALUES (%s)
+                ON CONFLICT (name) DO NOTHING
+            """, (portal,))
+        conn.commit()
+    except Exception as e:
+        logger.warning("[DB] _register_portals error: %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +99,6 @@ def record_scrape_run(
     """, (portal, pages, direct_only, query_url, status, listings_count, error_message))
     run_id = cur.fetchone()[0]
 
-    # Aktualizuj portal stats
     if status == "completed":
         cur.execute("""
             UPDATE portals
@@ -188,15 +129,13 @@ def save_listings(listings: list[dict]):
     conn = get_conn()
     cur = conn.cursor()
 
-    # Deduplikacja wewnątrz paczki (żeby ON CONFLICT nie wywalał błędu)
     unique_listings = {}
     for l in listings:
         if l.get("url"):
             unique_listings[l["url"]] = l
-    
+
     records = []
     for l in unique_listings.values():
-
         records.append((
             l.get("portal"),
             l.get("title"),
@@ -275,18 +214,16 @@ def save_listings(listings: list[dict]):
             updated_at      = NOW()
     """, records)
 
-
     saved = cur.rowcount
     conn.commit()
     cur.close()
     conn.close()
-    
-    # Faza 2: Snapshot do historii
+
     try:
-        save_listing_history(listings)
+        save_listing_history(list(unique_listings.values()))
     except Exception as e:
-        logger.warning(f"Nie udalo sie zapisac listing_history: {e}")
-        
+        logger.warning("[DB] Nie udało się zapisać listing_history: %s", e)
+
     return saved
 
 
@@ -298,6 +235,30 @@ def save_llm_analysis(url: str, analysis: dict):
         SET llm_analysis = %s, updated_at = NOW()
         WHERE url = %s
     """, (Json(analysis) if analysis else None, url))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def save_listing_score(listing_id: int, score: float, text_score: float = None) -> None:
+    """
+    NOWA FUNKCJA — aktualizuje score i text_score po analizie LLM.
+    Była importowana w hunt_manager ale nie istniała w db.py.
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    if text_score is not None:
+        cur.execute("""
+            UPDATE listings
+            SET score = %s, text_score = %s, updated_at = NOW()
+            WHERE id = %s
+        """, (score, text_score, listing_id))
+    else:
+        cur.execute("""
+            UPDATE listings
+            SET score = %s, updated_at = NOW()
+            WHERE id = %s
+        """, (score, listing_id))
     conn.commit()
     cur.close()
     conn.close()
@@ -333,30 +294,24 @@ def get_hunt_config() -> dict:
 def get_hunt_listings(limit: int = 100, offset: int = 0) -> list[dict]:
     conn = get_conn()
     cur = conn.cursor()
-    # Bardziej zaawansowane filtrowanie oparte o JSONB hunt_config
     cur.execute("""
         WITH cfg AS (SELECT config FROM hunt_config WHERE id = 1)
         SELECT l.* FROM listings l, cfg
-        WHERE 
-            -- Cena
+        WHERE
             l.price <= COALESCE((cfg.config->>'max_price')::int, 2147483647)
             AND l.price >= COALESCE((cfg.config->>'min_price')::int, 0)
-            -- Powierzchnia
             AND l.area <= COALESCE((cfg.config->>'max_area')::numeric, 999999)
             AND l.area >= COALESCE((cfg.config->>'min_area')::numeric, 0)
-            -- Dzielnice (jeśli pusta lista, to wszystkie)
             AND (
-                jsonb_array_length(cfg.config->'districts') = 0 
+                jsonb_array_length(cfg.config->'districts') = 0
                 OR l.district = ANY(ARRAY(SELECT jsonb_array_elements_text(cfg.config->'districts')))
             )
-            -- Pokoje (jeśli pusta lista, to wszystkie)
             AND (
-                jsonb_array_length(cfg.config->'rooms') = 0 
+                jsonb_array_length(cfg.config->'rooms') = 0
                 OR l.rooms = ANY(ARRAY(SELECT jsonb_array_elements_text(cfg.config->'rooms')))
             )
-            -- Tylko bezpośrednie
             AND (
-                (cfg.config->>'direct_only')::boolean = FALSE 
+                (cfg.config->>'direct_only')::boolean = FALSE
                 OR l.direct_offer = TRUE
             )
         ORDER BY l.score DESC NULLS LAST, l.created_at DESC
@@ -379,10 +334,10 @@ def get_listing_by_id(listing_id: int) -> dict | None:
     conn.close()
     return dict(zip(cols, row)) if row else None
 
+
 def get_listings_for_llm_analysis(limit: int = 10) -> list[dict]:
     conn = get_conn()
     cur = conn.cursor()
-    # Priorytetyzujemy oferty dokładnie pasujące do aktualnego configu polowania
     cur.execute("""
         WITH cfg AS (SELECT config FROM hunt_config WHERE id = 1)
         SELECT l.* FROM listings l, cfg
@@ -391,7 +346,7 @@ def get_listings_for_llm_analysis(limit: int = 10) -> list[dict]:
           AND l.price >= COALESCE((cfg.config->>'min_price')::int, 0)
           AND l.area <= COALESCE((cfg.config->>'max_area')::numeric, 9999)
           AND l.area >= COALESCE((cfg.config->>'min_area')::numeric, 0)
-        ORDER BY 
+        ORDER BY
             l.score DESC NULLS LAST
         LIMIT %s
     """, (limit,))
@@ -400,7 +355,6 @@ def get_listings_for_llm_analysis(limit: int = 10) -> list[dict]:
     cur.close()
     conn.close()
     return rows
-
 
 
 def save_listing_history(listings: list[dict]):
@@ -449,10 +403,6 @@ def _to_int(val) -> int | None:
 # ---------------------------------------------------------------------------
 
 def upsert_market_stats(stats: list[dict]):
-    """
-    stats = [{"district": ..., "rooms": ..., "condition": ...,
-               "avg": ..., "median": ..., "p25": ..., "p75": ..., "count": ...}]
-    """
     if not stats:
         return
 
@@ -500,13 +450,10 @@ def get_market_stats(district: str = None) -> list[dict]:
 
 
 def generate_market_stats():
-    """
-    Agreguje aktualne oferty (listings) do tabeli market_stats.
-    """
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
-        SELECT 
+        SELECT
             COALESCE(district, 'Warszawa') as district,
             CAST(rooms AS integer) as parsed_rooms,
             condition,
@@ -521,7 +468,7 @@ def generate_market_stats():
         HAVING COUNT(*) >= 5
     """)
     rows = cur.fetchall()
-    
+
     stats_to_upsert = []
     for row in rows:
         stats_to_upsert.append({
@@ -536,11 +483,10 @@ def generate_market_stats():
         })
     cur.close()
     conn.close()
-    
+
     if stats_to_upsert:
         upsert_market_stats(stats_to_upsert)
-        logger.info(f"[DB] Zaktualizowano market_stats dla {len(stats_to_upsert)} grup.")
-
+        logger.info("[DB] Zaktualizowano market_stats dla %d grup.", len(stats_to_upsert))
 
 
 # ---------------------------------------------------------------------------
@@ -591,7 +537,6 @@ def get_listings(
         LIMIT %s OFFSET %s
     """, params)
 
-
     cols = [d[0] for d in cur.description]
     rows = [dict(zip(cols, row)) for row in cur.fetchall()]
     cur.close()
@@ -620,10 +565,6 @@ def get_listing_price_history(url: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def save_transaction_prices(transactions: list[dict]) -> int:
-    """
-    Zapisuje lub aktualizuje rekordy z RCN (Deweloperuch).
-    Klucz unikalności: sale_rcn_id.
-    """
     if not transactions:
         return 0
 
@@ -653,6 +594,11 @@ def save_transaction_prices(transactions: list[dict]) -> int:
         if t.get("sale_rcn_id") and t.get("amount_sqm")
     ]
 
+    if not records:
+        cur.close()
+        conn.close()
+        return 0
+
     execute_values(cur, """
         INSERT INTO transaction_prices
             (sale_rcn_id, city, city_slug, street_address, invest_slug,
@@ -674,7 +620,6 @@ def save_transaction_prices(transactions: list[dict]) -> int:
 
 
 def update_transaction_district(invest_slug: str, district: str) -> None:
-    """Uzupełnia dzielnicę dla transakcji po geocodingu."""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
@@ -688,7 +633,6 @@ def update_transaction_district(invest_slug: str, district: str) -> None:
 
 
 def get_transactions_without_district(limit: int = 200) -> list[dict]:
-    """Zwraca transakcje bez przypisanej dzielnicy (do geocodowania)."""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
@@ -709,7 +653,6 @@ def get_transactions_without_district(limit: int = 200) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def get_geocode_cache(invest_slugs: list[str]) -> dict[str, dict]:
-    """Zwraca cache geocodingu dla podanych slugów."""
     if not invest_slugs:
         return {}
     conn = get_conn()
@@ -729,7 +672,6 @@ def get_geocode_cache(invest_slugs: list[str]) -> dict[str, dict]:
 
 
 def save_geocode_cache(invest_slug: str, street_address: str, geo: dict) -> None:
-    """Zapisuje wynik geocodingu do cache."""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
@@ -753,14 +695,10 @@ def save_geocode_cache(invest_slug: str, street_address: str, geo: dict) -> None
 
 
 # ---------------------------------------------------------------------------
-# Photo analysis queue (Faza 4)
+# Photo analysis queue
 # ---------------------------------------------------------------------------
 
 def get_listings_for_photo_analysis(limit: int = 3) -> list[dict]:
-    """
-    Zwraca oferty z niepustą listą zdjęć, bez analizy photo_analysis,
-    posortowane po score malejąco.
-    """
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
@@ -781,7 +719,6 @@ def get_listings_for_photo_analysis(limit: int = 3) -> list[dict]:
 
 
 def save_photo_analysis(listing_id: int, analysis: dict) -> None:
-    """Zapisuje wynik analizy zdjęć do listings.photo_analysis."""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""

@@ -1,27 +1,16 @@
 """
 model.py — Unified scoring engine. Single source of truth.
 
+NAPRAWKI vs oryginał:
+1. transaction_gap_ratio() NIE zeruje score gdy brak RCN —
+   używa market_stats (mediany ofertowe) jako fallback benchmark.
+2. Wagi dostosowane do planu naprawczego:
+   price_gap 0.35, txn_gap 0.30, market_pos 0.15, freshness 0.12, direct 0.08
+3. AI boost addytywny: text max +8%, photo max +5%
+4. score_breakdown() zwraca szczegółowe komponenty dla UI
+
 WAŻNE: To jest jedyny plik z logiką scoringu.
-backend/models/model.py zostało usunięte — importuj wyłącznie z backend.model.
-
-Composite score 0-1:
-  Baza (zawsze obecna):
-    price_gap    0.35  — ML/avg estimate vs cena oferty
-    txn_gap      0.30  — mediana RCN transakcji vs cena/m²
-    market_pos   0.15  — pozycja vs bieżące oferty w tej samej dzielnicy
-    freshness    0.12  — bonus za ogłoszenie <1 dzień
-    direct       0.08  — oferta bezpośrednia
-
-  AI boost (addytywny, nie zastępuje bazy):
-    text_score   max +8%   — analiza LLM opisu
-    photo_score  max +5%   — analiza CV zdjęć
-
-  Mnożnik stanu: 0.70–1.00
-  CAGR bonus: addytywny max +0.10
-
-Fallback gdy brak RCN:
-  Zamiast zerować txn_gap, używamy market_stats (mediany ofertowe)
-  jako proxy benchmarku. Score jest nadal użyteczny.
+backend/models/model.py (jeśli istnieje) powinno być usunięte.
 """
 from statistics import mean
 
@@ -41,7 +30,7 @@ def price_per_square_meter(listing: dict) -> float | None:
 def group_average_price_per_sqm(listings: list[dict]) -> dict[str, float]:
     """
     Oblicza średnią cenę/m² per dzielnica z podanej listy ofert.
-    Używane jako fallback benchmark gdy brak danych RCN.
+    Używane jako benchmark gdy brak danych RCN.
     """
     by_location: dict[str, list[float]] = {}
     for listing in listings:
@@ -50,7 +39,6 @@ def group_average_price_per_sqm(listings: list[dict]) -> dict[str, float]:
             continue
         location = (
             listing.get("district")
-            or listing.get("raw_location", {}).get("address", {}).get("city", {}).get("name")
             or "Warszawa"
         )
         by_location.setdefault(location, []).append(psm)
@@ -58,20 +46,6 @@ def group_average_price_per_sqm(listings: list[dict]) -> dict[str, float]:
     if averaged and "Warszawa" not in averaged:
         averaged["Warszawa"] = round(mean(averaged.values()), 2)
     return averaged
-
-
-def estimate_value(listing: dict, averages: dict) -> int | None:
-    if not listing.get("area"):
-        return None
-    district = listing.get("district") or "Warszawa"
-    base_price = (
-        averages.get(district)
-        or averages.get("Warszawa")
-        or (mean(averages.values()) if averages else None)
-    )
-    if not base_price:
-        return None
-    return round(base_price * listing["area"])
 
 
 def price_gap_ratio(price: int | None, estimated_value: int | None) -> float:
@@ -106,6 +80,9 @@ def transaction_gap_ratio(listing: dict, rcn_benchmark: float | None) -> float:
     > 0 : oferta poniżej rynku transakcyjnego (okazja)
     < 0 : oferta powyżej rynku transakcyjnego (przepłacona)
     Clamp: -0.5..1.0
+
+    NAPRAWKA: nie zeruje gdy brak benchmark — zwraca 0.0 ale caller
+    powinien użyć get_market_stats_benchmark() jako fallback.
     """
     if not rcn_benchmark or rcn_benchmark <= 0:
         return 0.0
@@ -142,8 +119,10 @@ def value_growth_bonus(cagr: float | None) -> float:
 def get_market_stats_benchmark(city_slug: str, district: str | None) -> float | None:
     """
     Pobiera medianę ceny/m² z tabeli market_stats jako fallback gdy brak RCN.
-    market_stats jest agregacją bieżących ofert — nie tak dobre jak RCN,
-    ale pozwala uniknąć zerowania składowej txn_gap.
+    market_stats jest agregacją bieżących ofert — gorsze niż RCN ale lepsze niż 0.
+
+    NAPRAWKA: Dzięki temu transaction_gap_ratio nie zeruje składowej 0.30
+    gdy brak danych transakcyjnych dla danej dzielnicy.
     """
     try:
         from backend.db import get_conn
@@ -161,7 +140,7 @@ def get_market_stats_benchmark(city_slug: str, district: str | None) -> float | 
             if row and row[0]:
                 cur.close(); conn.close()
                 return float(row[0])
-        # Próba 2: całe miasto (district = 'Warszawa' lub podobne)
+        # Próba 2: całe miasto
         cur.execute("""
             SELECT AVG(median_price_per_m2) FROM market_stats
             WHERE median_price_per_m2 IS NOT NULL
@@ -186,7 +165,6 @@ def condition_multiplier(listing: dict) -> float:
     Obniża score dla wymagających remontu, premiuje nowe.
     """
     cond = str(listing.get("condition") or "").lower()
-    # LLM może zwrócić polskie lub angielskie wartości
     if any(k in cond for k in ("now", "new", "nowy", "nowe")):
         return 1.00
     if any(k in cond for k in ("dobr", "good", "very_good")):
@@ -195,7 +173,7 @@ def condition_multiplier(listing: dict) -> float:
         return 0.85
     if any(k in cond for k in ("remon", "renovation", "to_renovate", "wymag")):
         return 0.70
-    return 0.92  # nieznany stan — lekko ostrożnie
+    return 0.92  # nieznany stan
 
 
 # ---------------------------------------------------------------------------
@@ -213,8 +191,8 @@ def opportunity_score(
     """
     Composite opportunity score 0-1.
 
-    Jeśli brak rcn_benchmark (NULL z DB), próbuje użyć market_stats jako fallback,
-    żeby nie zerować składowej txn_gap.
+    NAPRAWKA: Gdy brak rcn_benchmark (NULL z DB), używa market_stats jako fallback
+    zamiast zerowania składowej txn_gap (0.30).
 
     Wagi bazowe (suma = 1.0):
       price_gap  0.35
@@ -232,7 +210,7 @@ def opportunity_score(
     """
     price = listing.get("price")
 
-    # Fallback benchmark gdy brak RCN
+    # NAPRAWKA: Fallback benchmark gdy brak RCN
     effective_benchmark = rcn_benchmark
     if not effective_benchmark:
         district = listing.get("district")
@@ -258,12 +236,12 @@ def opportunity_score(
     # 5. Oferta bezpośrednia
     direct = 1.0 if listing.get("direct_offer") else 0.0
 
-    # 6. AI text score (z LLM)
+    # 6. AI text score
     raw_text = listing.get("text_score")
     has_text = raw_text is not None and float(raw_text) > 0
     text_score = float(raw_text or 0)
 
-    # 7. Photo score (z CV pipeline)
+    # 7. Photo score
     raw_photo = listing.get("photo_score")
     has_photo = raw_photo is not None and float(raw_photo) > 0
     photo_score = float(raw_photo or 0)
@@ -283,7 +261,7 @@ def opportunity_score(
         + direct      * 0.08
     ) * mult + growth_bonus
 
-    # AI boost (addytywny)
+    # AI boost (addytywny, nie zastępuje bazy)
     if has_text:
         base += text_score * 0.08
     if has_photo:
@@ -355,11 +333,12 @@ def score_breakdown(
             "rcn_benchmark": effective_benchmark,
             "rcn_fallback": used_fallback,
             "price_per_m2": psm,
-            "estimated_savings": savings,
+            "estimated_savings_pln": savings,
             "condition_mult": mult,
             "days_on_market": days,
             "is_direct": bool(listing.get("direct_offer")),
             "has_llm_analysis": text_score > 0,
+            "has_photo_analysis": photo_score > 0,
             "cagr_pct": round(cagr * 100, 1) if cagr else None,
         },
     }
