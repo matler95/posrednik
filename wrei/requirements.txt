@@ -10,8 +10,10 @@ requests
 beautifulsoup4
 lxml
 
-# ── Scheduler ──────────────────────────────────────────────────────────────
+# ── Scheduler & Task Queue (Stage 2) ──────────────────────────────────────
 APScheduler
+arq
+redis
 
 # ── ML / NLP ───────────────────────────────────────────────────────────────
 scikit-learn
@@ -19,9 +21,9 @@ joblib
 spacy
 
 # ── CV (Faza 4) ─────────────────────────────────────────────────────────────
-# transformers    # CLIP pre-filter — odkomentuj kiedy wdrażasz Fazę 4
-# torch           # CPU-only: pip install torch --index-url https://download.pytorch.org/whl/cpu
-# Pillow
+transformers
+torch --index-url https://download.pytorch.org/whl/cpu
+Pillow
 
 # ── Dashboard (Legacy - Removed) ──────────────────────────────────────────
 # streamlit

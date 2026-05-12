@@ -73,11 +73,4 @@ async def startup():
     except Exception as e:
         logger.warning("[Startup] RCN ingest error: %s", e)
     
-    # 3. Scheduler
-    try:
-        from backend.scheduler import start_scheduler
-        start_scheduler()
-    except Exception as e:
-        logger.warning("[Startup] Scheduler error: %s", e)
-    
-    logger.info("[WREI] Backend v3.0 (Modular) uruchomiony.")
+    logger.info("[WREI] Backend v3.0 (Modular + Distributed) uruchomiony.")

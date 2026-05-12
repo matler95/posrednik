@@ -13,10 +13,12 @@
     "axios": "^1.16.0",
     "clsx": "^2.1.1",
     "leaflet": "^1.9.4",
+    "leaflet.heat": "^0.2.0",
     "lucide-react": "^1.14.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-leaflet": "^5.0.0",
+    "react-leaflet-heatmap-layer-v3": "^3.0.3-beta-1",
     "react-router-dom": "^7.15.0",
     "recharts": "^3.8.1",
     "tailwind-merge": "^3.6.0"

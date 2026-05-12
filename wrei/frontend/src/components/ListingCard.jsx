@@ -29,7 +29,7 @@ export function ListingCard({ listing, compact = false }) {
     id, title, price, area, district, rooms,
     score, transaction_gap, images, direct_offer,
     rcn_benchmark, price_per_m2, llm_analysis, portal,
-    days_on_market, condition,
+    days_on_market, condition, photo_analysis,
   } = listing;
 
   const img = Array.isArray(images) && images.length > 0
@@ -44,6 +44,8 @@ export function ListingCard({ listing, compact = false }) {
   const aiSummary = llm_analysis?.summary;
   const greenFlags = llm_analysis?.green_flags || [];
   const redFlags = llm_analysis?.red_flags || [];
+  
+  const photoCond = photo_analysis?.condition;
 
   return (
     <div className="card fade-in" style={{ padding: 0, overflow: 'hidden', display: 'flex' }}>
@@ -163,12 +165,25 @@ export function ListingCard({ listing, compact = false }) {
           )}
 
           {/* Condition */}
-          {condition && (
-            <div style={{
-              background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '4px 10px',
-              fontSize: 11, color: 'var(--text2)', textTransform: 'capitalize', letterSpacing: '0.04em',
-            }}>
-              {condition}
+          {(condition || photoCond) && (
+            <div style={{ display: 'flex', gap: 4 }}>
+              {condition && (
+                <div style={{
+                  background: 'rgba(255,255,255,0.04)', borderRadius: 6, padding: '4px 10px',
+                  fontSize: 11, color: 'var(--text2)', textTransform: 'capitalize', letterSpacing: '0.04em',
+                }}>
+                  {condition}
+                </div>
+              )}
+              {photoCond && (
+                <div style={{
+                  background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.2)',
+                  borderRadius: 6, padding: '4px 10px',
+                  fontSize: 11, color: '#818cf8', textTransform: 'uppercase', fontWeight: 700,
+                }} title="Ocena wizualna AI">
+                  👁 {photoCond.replace('_', ' ')}
+                </div>
+              )}
             </div>
           )}
         </div>

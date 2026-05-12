@@ -117,6 +117,67 @@ export default function ListingDetail() {
               <ParamItem icon={Home} label="Piętro" value={listing.floor ? `${listing.floor}/${listing.total_floors || '?'}` : 'Brak danych'} />
             </div>
           </div>
+
+          {/* Photo Analysis Section (Faza 4) */}
+          {listing.photo_analysis && (
+            <div className="card-premium border-l-4 border-l-indigo-500">
+              <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
+                <Layers className="w-5 h-5 text-indigo-400" /> Wizualna Ocena Stanu (Moondream AI)
+              </h2>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                <div className="space-y-4">
+                  <div className="flex justify-between items-end">
+                    <span className="text-sm font-bold text-premium-muted uppercase">Stan wizualny</span>
+                    <span className="text-xl font-black text-indigo-400 uppercase">{listing.photo_analysis.condition?.replace('_', ' ')}</span>
+                  </div>
+                  <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
+                    <div 
+                      className="h-full bg-indigo-500 transition-all duration-1000" 
+                      style={{ width: `${(listing.photo_analysis.avg_condition_score || 0) * 10}%` }}
+                    />
+                  </div>
+                  <div className="flex justify-between text-[10px] text-slate-500 font-bold uppercase">
+                    <span>Remont</span>
+                    <span>Idealny</span>
+                  </div>
+                </div>
+
+                <div className="bg-slate-800/30 rounded-xl p-4 border border-slate-700/30">
+                  <div className="text-xs font-bold text-premium-muted uppercase mb-2">Estymowany koszt remontu</div>
+                  <div className="text-2xl font-black text-white">
+                    {listing.photo_analysis.estimated_renovation_pct > 0 
+                      ? `~${listing.photo_analysis.estimated_renovation_pct}%` 
+                      : '0% (Gotowe)'}
+                  </div>
+                  <div className="text-[10px] text-slate-400 mt-1">Sugerowany narzut na cenę zakupu wg AI</div>
+                </div>
+              </div>
+
+              <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <div className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">Wizualne atuty</div>
+                  <div className="flex flex-wrap gap-2">
+                    {(listing.photo_analysis.positive_features || []).map((f, i) => (
+                      <span key={i} className="px-2 py-1 rounded-md bg-emerald-500/5 border border-emerald-500/10 text-[11px] text-emerald-400">
+                        {f}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <div className="text-[10px] font-bold text-indigo-400 uppercase tracking-widest">Zidentyfikowane wady</div>
+                  <div className="flex flex-wrap gap-2">
+                    {(listing.photo_analysis.negative_features || []).map((f, i) => (
+                      <span key={i} className="px-2 py-1 rounded-md bg-indigo-500/5 border border-indigo-500/10 text-[11px] text-indigo-400">
+                        {f}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Right Column: Pricing & Market Analysis */}

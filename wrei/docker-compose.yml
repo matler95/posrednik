@@ -10,6 +10,11 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
   backend:
     build:
       context: .
@@ -18,22 +23,47 @@ services:
       - "8000:8000"
     depends_on:
       - db
+      - redis
     volumes:
       - ./backend:/app/backend
-      - wrei_photos:/app/photos       # zdjęcia pobrane przez CV
+      - wrei_photos:/app/photos
     environment:
       POSTGRES_DB: wrei
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_HOST: db
-      # Ollama działa na HOŚCIE — host.docker.internal to Windows/Mac gateway
+      REDIS_HOST: redis
       OLLAMA_URL: http://host.docker.internal:11434/api/chat
       OLLAMA_MODEL: qwen2.5:7b
       OLLAMA_VISION_MODEL: moondream
-      # Telegram (wypełnij przy wdrożeniu Fazy 5)
       TELEGRAM_TOKEN: ""
       TELEGRAM_CHAT_ID: ""
-      # Multi-miasto: comma-separated slugi
+      TARGET_CITIES: warszawa
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: arq backend.tasks.WorkerSettings
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - ./backend:/app/backend
+      - wrei_photos:/app/photos
+    environment:
+      POSTGRES_DB: wrei
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_HOST: db
+      REDIS_HOST: redis
+      OLLAMA_URL: http://host.docker.internal:11434/api/chat
+      OLLAMA_MODEL: qwen2.5:7b
+      OLLAMA_VISION_MODEL: moondream
+      TELEGRAM_TOKEN: ""
+      TELEGRAM_CHAT_ID: ""
       TARGET_CITIES: warszawa
     extra_hosts:
       - "host.docker.internal:host-gateway"

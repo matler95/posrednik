@@ -31,12 +31,9 @@ async def hunt_start(body: dict):
 
 @router.get("/hunt/stream/{job_id}")
 async def hunt_stream(job_id: str):
-    from backend.hunt_manager import hunt_manager, stream_job_events
-    job = hunt_manager.current_job
-    if not job or job.job_id != job_id:
-        raise HTTPException(status_code=404, detail="Job nie istnieje lub wygasł.")
+    from backend.hunt_manager import stream_job_events
     return StreamingResponse(
-        stream_job_events(job),
+        stream_job_events(job_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -66,18 +63,21 @@ async def hunt_status():
     cur.close()
     conn.close()
 
-    job = hunt_manager.current_job
+    cur.execute("SELECT * FROM hunt_jobs ORDER BY started_at DESC LIMIT 1")
+    job_row = cur.fetchone()
     active_job_data = None
-    if job:
+    if job_row:
+        # Map row to dict (assuming columns are id, status, config, total_scraped, total_saved, total_ai_analyzed, error, portals_counts, started_at, finished_at)
+        cols = [d[0] for d in cur.description]
+        job_db = dict(zip(cols, job_row))
         active_job_data = {
-            "job_id": job.job_id,
-            "status": job.status,
-            "total_scraped": job.total_scraped,
-            "total_saved": job.total_saved,
-            "total_ai_analyzed": job.total_ai_analyzed,
-            "portals_counts": job.portals_counts,
-            "elapsed_s": round(job.finished_at - job.started_at, 1) if job.finished_at else None,
-            "error": job.error,
+            "job_id": job_db["id"],
+            "status": job_db["status"],
+            "total_scraped": job_db["total_scraped"],
+            "total_saved": job_db["total_saved"],
+            "total_ai_analyzed": job_db["total_ai_analyzed"],
+            "portals_counts": job_db["portals_counts"],
+            "error": job_db["error"],
         }
 
     return {
