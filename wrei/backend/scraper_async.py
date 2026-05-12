@@ -1,11 +1,18 @@
 """
 Async Scraper Engine — równoległe pobieranie ofert ze wszystkich portali.
 Każdy portal uruchamiany jako osobny asyncio task, wyniki agregowane po zakończeniu.
+
+NAPRAWKI v2:
+- city_slug przekazywany do każdej oferty (był gubiony)
+- Lepsza obsługa wyjątków per-portal (nie crashuje całego joba)
+- Deduplikacja po URL zachowuje najnowszą wersję
+- Logowanie postępu per-portal
 """
 import asyncio
 import logging
+import random
 import time
-from typing import AsyncGenerator, Callable
+from typing import Callable
 
 import httpx
 
@@ -18,6 +25,7 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0",
 ]
 
 PORTAL_DELAYS = {
@@ -32,7 +40,6 @@ PORTAL_DELAYS = {
 
 async def fetch_html_async(url: str, client: httpx.AsyncClient, portal: str = "default") -> str:
     """Async HTML fetch z retry i rotacją UA."""
-    import random
     headers = {
         "User-Agent": random.choice(USER_AGENTS),
         "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
@@ -71,21 +78,34 @@ async def _run_portal_async(
     portal_name: str,
     scraper_fn: Callable,
     params: dict,
+    city_slug: str,
     progress_cb: Callable | None = None,
 ) -> list[dict]:
-    """Uruchamia jeden scraper synchroniczny w osobnym wątku, żeby nie blokować event loop."""
+    """
+    Uruchamia jeden scraper synchroniczny w osobnym wątku (run_in_executor).
+    Nie blokuje event loop. Taguje każdą ofertę city_slug.
+    """
     loop = asyncio.get_event_loop()
     try:
-        logger.info("[Hunt] Start: %s", portal_name)
+        logger.info("[Hunt] Start: %s / %s", portal_name, city_slug)
         t0 = time.time()
         results = await loop.run_in_executor(None, lambda: scraper_fn(**params))
         elapsed = time.time() - t0
+
+        # FIX: przekaż city_slug do każdej oferty
+        for listing in results:
+            if not listing.get("city_slug"):
+                listing["city_slug"] = city_slug
+
         logger.info("[Hunt] %s: %d ofert w %.1fs", portal_name, len(results), elapsed)
+
         if progress_cb:
             await progress_cb(portal_name, len(results))
         return results
     except Exception as e:
-        logger.error("[Hunt] Błąd portalu %s: %s", portal_name, e)
+        logger.error("[Hunt] Błąd portalu %s: %s", portal_name, e, exc_info=True)
+        if progress_cb:
+            await progress_cb(portal_name, 0)
         return []
 
 
@@ -103,6 +123,7 @@ async def run_hunt_async(
     """
     from backend.scrapers import PORTAL_SCRAPERS
 
+    city_slug = config.get("city_slug") or "warszawa"
     portals = config.get("portals") or list(PORTAL_SCRAPERS.keys())
     if isinstance(portals, str):
         portals = [p.strip() for p in portals.split(",") if p.strip()]
@@ -112,7 +133,7 @@ async def run_hunt_async(
     if isinstance(districts, list) and len(districts) == 0:
         districts = [None]
 
-    scraper_params = {
+    scraper_params_base = {
         "min_price": config.get("min_price"),
         "max_price": config.get("max_price"),
         "min_area": config.get("min_area"),
@@ -129,21 +150,25 @@ async def run_hunt_async(
             logger.warning("[Hunt] Nieznany portal: %s", portal_name)
             continue
         for district in districts:
-            params = {**scraper_params, "district": district}
-            tasks.append(_run_portal_async(portal_name, scraper_fn, params, progress_cb))
+            params = {**scraper_params_base, "district": district}
+            tasks.append(
+                _run_portal_async(portal_name, scraper_fn, params, city_slug, progress_cb)
+            )
 
     if not tasks:
+        logger.warning("[Hunt] Brak tasków do uruchomienia — sprawdź listę portali")
         return []
 
+    logger.info("[Hunt] Uruchamiam %d tasków równolegle", len(tasks))
     results_nested = await asyncio.gather(*tasks, return_exceptions=True)
 
     all_listings = []
-    for result in results_nested:
+    for i, result in enumerate(results_nested):
         if isinstance(result, list):
             all_listings.extend(result)
         elif isinstance(result, Exception):
-            logger.error("[Hunt] Task exception: %s", result)
+            logger.error("[Hunt] Task %d exception: %s", i, result)
 
     deduped = deduplicate_listings(all_listings)
-    logger.info("[Hunt] Łącznie: %d unikalnych ofert", len(deduped))
+    logger.info("[Hunt] Łącznie: %d unikalnych ofert (przed deduplikacją: %d)", len(deduped), len(all_listings))
     return deduped

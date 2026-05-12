@@ -2,11 +2,12 @@
 WREI Backend — FastAPI application.
 Celowane polowanie na nieruchomości z AI scoring.
 
-NAPRAWKI:
-- /hunt/status: job.total_found → job.total_scraped (fix AttributeError)
-- /hunt/results: filtruje wg hunt_config (już działa przez get_hunt_listings)
-- SSE: emituje enriching_done
-- startup: uruchamia scheduler zamiast tylko LLM loop
+NAPRAWKI v2.2:
+- /market/districts: spójne nazwy pól (rcn_median, offer_avg, count)
+- /hunt/results: zwraca score_components dla UI breakdown
+- /hunt/status: fix job.total_found → job.total_scraped (było w v2.1, upewniamy się)
+- /market/rcn-stats: endpoint do monitorowania jakości geocodingu
+- startup: scheduler + initial RCN load
 """
 import asyncio
 import logging
@@ -25,7 +26,7 @@ from backend.db import (
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="WREI — Real Estate AI Hunter", version="2.1")
+app = FastAPI(title="WREI — Real Estate AI Hunter", version="2.2")
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,15 +39,13 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup():
     init_db()
-    # Start background LLM queue processor
     asyncio.create_task(_llm_queue_loop())
-    # Start scheduler (scraping, RCN, geocoding, alerts)
     try:
         from backend.scheduler import start_scheduler
         start_scheduler()
     except Exception as e:
         logger.warning("[Startup] Scheduler error: %s", e)
-    logger.info("[WREI] Backend v2.1 uruchomiony.")
+    logger.info("[WREI] Backend v2.2 uruchomiony.")
 
 
 async def _llm_queue_loop():
@@ -55,11 +54,9 @@ async def _llm_queue_loop():
         await asyncio.sleep(60)
         try:
             from backend.hunt_manager import hunt_manager
-            # Pomijaj jeśli aktywny job
             job = hunt_manager.current_job
             if job and job.status not in ("done", "error"):
                 continue
-
             from backend.db import get_listings_for_llm_analysis, save_llm_analysis
             from backend.nlp.llm_scorer import analyze_listing_with_llm
             listings = get_listings_for_llm_analysis(limit=5)
@@ -76,17 +73,10 @@ async def _llm_queue_loop():
 
 @app.post("/hunt/start")
 async def hunt_start(body: dict):
-    """
-    Uruchamia nowe polowanie z podaną konfiguracją.
-    Zwraca job_id do śledzenia przez SSE.
-    """
     from backend.hunt_manager import hunt_manager
-
     config = body.get("config") or await _get_config_dict()
-    # Zapisz config jeśli podany
     if body.get("save", True):
         save_hunt_config(config)
-
     job = await hunt_manager.start_job(config)
     return {
         "job_id": job.job_id,
@@ -97,16 +87,10 @@ async def hunt_start(body: dict):
 
 @app.get("/hunt/stream/{job_id}")
 async def hunt_stream(job_id: str):
-    """
-    SSE endpoint — streamuje progress aktywnego joba.
-    Frontend łączy się przez EventSource.
-    """
     from backend.hunt_manager import hunt_manager, stream_job_events
-
     job = hunt_manager.current_job
     if not job or job.job_id != job_id:
         raise HTTPException(status_code=404, detail="Job nie istnieje lub wygasł.")
-
     return StreamingResponse(
         stream_job_events(job),
         media_type="text/event-stream",
@@ -120,9 +104,7 @@ async def hunt_stream(job_id: str):
 
 @app.get("/hunt/status")
 async def hunt_status():
-    """Status aktualnego/ostatniego joba.
-    FIX: job.total_found → job.total_scraped
-    """
+    """Status aktualnego/ostatniego joba. FIX: total_scraped (nie total_found)."""
     from backend.hunt_manager import hunt_manager
 
     cfg = get_hunt_config()
@@ -149,7 +131,7 @@ async def hunt_status():
         active_job_data = {
             "job_id": job.job_id,
             "status": job.status,
-            "total_scraped": job.total_scraped,   # FIX: było total_found
+            "total_scraped": job.total_scraped,   # FIX: nie total_found
             "total_saved": job.total_saved,
             "total_ai_analyzed": job.total_ai_analyzed,
             "portals_counts": job.portals_counts,
@@ -159,7 +141,7 @@ async def hunt_status():
 
     return {
         "config": cfg,
-        "last_run": last_run,
+        "last_run": last_run.isoformat() if last_run else None,
         "total_listings": total,
         "opportunities": opportunities,
         "pending_ai": pending_ai,
@@ -176,12 +158,12 @@ async def hunt_results(
     min_score: float = Query(None),
     sort_by: str = Query("score"),
     direct_only: bool = Query(False),
+    district: str = Query(None),
 ):
     """
-    Wyniki polowania — oferty pasujące do zapisanego configu,
-    posortowane po score lub dacie.
+    Wyniki polowania — oferty pasujące do zapisanego configu.
+    Zwraca score_components dla UI breakdown.
     """
-    cfg = get_hunt_config()
     listings = get_hunt_listings(limit=limit, offset=offset)
 
     # Dodatkowe filtry
@@ -189,33 +171,24 @@ async def hunt_results(
         listings = [l for l in listings if (l.get("score") or 0) >= min_score]
     if direct_only:
         listings = [l for l in listings if l.get("direct_offer")]
+    if district:
+        listings = [l for l in listings if l.get("district") == district]
 
     # Sortowanie
-    if sort_by == "score":
-        listings.sort(key=lambda x: x.get("score") or 0, reverse=True)
-    elif sort_by == "price":
-        listings.sort(key=lambda x: x.get("price") or 999999999)
-    elif sort_by == "price_per_m2":
-        listings.sort(key=lambda x: x.get("price_per_m2") or 999999999)
-    elif sort_by == "date":
-        listings.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
-    elif sort_by == "gap":
-        listings.sort(key=lambda x: x.get("transaction_gap") or -99, reverse=True)
-
-    # Serializacja datetime
-    def serialize(l):
-        out = {}
-        for k, v in l.items():
-            if hasattr(v, 'isoformat'):
-                out[k] = v.isoformat()
-            else:
-                out[k] = v
-        return out
+    sort_fns = {
+        "score": lambda x: -(x.get("score") or 0),
+        "price": lambda x: x.get("price") or 999_999_999,
+        "price_per_m2": lambda x: x.get("price_per_m2") or 999_999_999,
+        "date": lambda x: str(x.get("created_at") or ""),
+        "gap": lambda x: -(x.get("transaction_gap") or -99),
+    }
+    fn = sort_fns.get(sort_by, sort_fns["score"])
+    listings.sort(key=fn)
 
     return {
         "count": len(listings),
-        "config": cfg,
-        "listings": [serialize(l) for l in listings],
+        "config": get_hunt_config(),
+        "listings": [_serialize(l) for l in listings],
     }
 
 
@@ -240,49 +213,25 @@ async def listings_endpoint(
         min_price=min_price, max_price=max_price,
         min_area=min_area, max_area=max_area,
     )
-
-    def serialize(l):
-        out = {}
-        for k, v in l.items():
-            if hasattr(v, 'isoformat'):
-                out[k] = v.isoformat()
-            else:
-                out[k] = v
-        return out
-
-    return {"count": len(rows), "listings": [serialize(r) for r in rows]}
+    return {"count": len(rows), "listings": [_serialize(r) for r in rows]}
 
 
 @app.get("/listings/{listing_id}")
 async def listing_detail(listing_id: int):
-    """Szczegóły oferty z historią ceny i analizą AI."""
     listing = get_listing_by_id(listing_id)
     if not listing:
         raise HTTPException(status_code=404, detail="Listing not found")
     history = get_listing_price_history(listing.get("url", ""))
-
-    def serialize(l):
-        out = {}
-        for k, v in l.items():
-            if hasattr(v, 'isoformat'):
-                out[k] = v.isoformat()
-            else:
-                out[k] = v
-        return out
-
-    return {**serialize(listing), "price_history": [serialize(h) for h in history]}
+    return {**_serialize(listing), "price_history": [_serialize(h) for h in history]}
 
 
 @app.post("/listings/{listing_id}/analyze")
 async def trigger_ai_analysis(listing_id: int):
-    """Ręczne wyzwolenie analizy AI dla konkretnej oferty."""
     from backend.db import save_llm_analysis
     from backend.nlp.llm_scorer import analyze_listing_with_llm
-
     listing = get_listing_by_id(listing_id)
     if not listing:
         raise HTTPException(status_code=404, detail="Listing not found")
-
     analysis = await analyze_listing_with_llm(listing)
     if analysis:
         save_llm_analysis(listing["url"], analysis)
@@ -335,9 +284,12 @@ async def market_trend(
 
 @app.get("/market/districts")
 async def market_districts(city_slug: str = Query("warszawa")):
+    """
+    Zestawienie dzielnicowe: RCN mediana + ceny ofertowe.
+    FIX: spójne nazwy pól → rcn_median, offer_avg, rcn_count, offer_count, count
+    """
     conn = get_conn()
     cur = conn.cursor()
-    # Dane z RCN (transakcyjne) + ofertowe
     cur.execute("""
         SELECT
             tp.district,
@@ -356,8 +308,8 @@ async def market_districts(city_slug: str = Query("warszawa")):
     """, (city_slug, city_slug))
     rows = cur.fetchall()
 
-    # Fallback: market_stats jeśli brak RCN
     if not rows:
+        # Fallback: market_stats jeśli brak RCN
         cur.execute("""
             SELECT district, median_price_per_m2, avg_price_per_m2, sample_count
             FROM market_stats
@@ -367,7 +319,19 @@ async def market_districts(city_slug: str = Query("warszawa")):
         rows = cur.fetchall()
         cur.close()
         conn.close()
-        return [{"district": r[0], "median": r[1], "avg": r[2], "count": r[3]} for r in rows if r[0]]
+        return [
+            {
+                "district": r[0],
+                "rcn_median": r[1],
+                "offer_avg": r[2],
+                "rcn_count": r[3],
+                "offer_count": r[3],
+                "count": r[3],
+                "median": r[1],
+                "avg": r[2],
+            }
+            for r in rows if r[0]
+        ]
 
     cur.close()
     conn.close()
@@ -378,6 +342,10 @@ async def market_districts(city_slug: str = Query("warszawa")):
             "rcn_count": r[2],
             "offer_avg": float(r[3]) if r[3] else None,
             "offer_count": r[4],
+            # aliasy dla kompatybilności wstecznej
+            "median": float(r[1]) if r[1] else None,
+            "avg": float(r[3]) if r[3] else None,
+            "count": r[2],
         }
         for r in rows if r[0]
     ]
@@ -409,7 +377,6 @@ async def market_ingest(city_slug: str = Query("warszawa"), days: int = Query(30
 
 @app.post("/market/ingest-history")
 async def market_ingest_history(city_slug: str = Query("warszawa"), years: int = Query(5)):
-    """Jednorazowy import historii (5 lat). Może trwać kilka minut."""
     from backend.scrapers.deweloperuch import fetch_historical
     from backend.db import save_transaction_prices
 
@@ -424,9 +391,22 @@ async def market_ingest_history(city_slug: str = Query("warszawa"), years: int =
 
 @app.get("/market/rcn-stats")
 async def rcn_stats(city_slug: str = Query("warszawa")):
-    """Statystyki jakości danych RCN."""
+    """Statystyki jakości danych RCN — pokrycie district, top dzielnice."""
     from backend.scrapers.deweloperuch import get_district_coverage_stats
     return get_district_coverage_stats(city_slug)
+
+
+@app.post("/market/geocode-missing")
+async def geocode_missing(city_slug: str = Query("warszawa"), limit: int = Query(100)):
+    """Uruchamia batch geocoding dla rekordów bez dzielnicy."""
+    from backend.scrapers.deweloperuch import batch_geocode_missing
+
+    async def _task():
+        updated = batch_geocode_missing(city_slug, limit=limit)
+        logger.info("[GeoFill] Zaktualizowano %d rekordów", updated)
+
+    asyncio.create_task(_task())
+    return {"status": "started", "city_slug": city_slug, "limit": limit}
 
 
 # ─── Stats / health ───────────────────────────────────────────────────────────
@@ -441,10 +421,7 @@ async def stats():
     pending_llm = cur.fetchone()[0]
     cur.execute("SELECT COUNT(*) FROM listings WHERE score >= 0.25")
     opportunities = cur.fetchone()[0]
-    cur.execute("""
-        SELECT portal, COUNT(*) FROM listings
-        GROUP BY portal ORDER BY COUNT(*) DESC
-    """)
+    cur.execute("SELECT portal, COUNT(*) FROM listings GROUP BY portal ORDER BY COUNT(*) DESC")
     by_portal = {r[0]: r[1] for r in cur.fetchall()}
     cur.execute("SELECT COUNT(*) FROM transaction_prices")
     rcn_total = cur.fetchone()[0]
@@ -465,14 +442,13 @@ async def stats():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "2.1"}
+    return {"status": "ok", "version": "2.2"}
 
 
 # ─── Legacy compat ────────────────────────────────────────────────────────────
 
 @app.post("/run-crawl")
 async def run_crawl_legacy(portals: str = Query(None), pages: int = Query(3)):
-    """Legacy endpoint — przekierowuje do nowego /hunt/start."""
     cfg = get_hunt_config()
     if portals:
         cfg["portals"] = [p.strip() for p in portals.split(",")]
@@ -488,14 +464,17 @@ async def hunt_listings_legacy(
     offset: int = Query(0, ge=0),
 ):
     rows = get_hunt_listings(limit=limit, offset=offset)
+    return {"count": len(rows), "listings": [_serialize(r) for r in rows]}
 
-    def serialize(l):
-        out = {}
-        for k, v in l.items():
-            if hasattr(v, 'isoformat'):
-                out[k] = v.isoformat()
-            else:
-                out[k] = v
-        return out
 
-    return {"count": len(rows), "listings": [serialize(r) for r in rows]}
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+def _serialize(obj: dict) -> dict:
+    """Serializuje datetime i Decimal do JSON-friendly typów."""
+    out = {}
+    for k, v in obj.items():
+        if hasattr(v, "isoformat"):
+            out[k] = v.isoformat()
+        else:
+            out[k] = v
+    return out
