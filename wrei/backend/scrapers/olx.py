@@ -210,14 +210,15 @@ def _normalize_olx_listing(item: dict) -> dict | None:
 
     # Dzielnica z lokalizacji
     location = item.get("location") or {}
-    district = "Warszawa"
+    district = None  # zamiast district = "Warszawa"
     city_label = location.get("cityName") or location.get("city", {})
     if isinstance(city_label, dict):
         city_label = city_label.get("name", "")
     district_obj = location.get("district") or {}
     if isinstance(district_obj, dict):
         district = district_obj.get("name") or district
-
+    elif isinstance(district_obj, str) and district_obj:
+        district = district_obj
     # Oferta bezpośrednia
     advertiser = item.get("advertiserType") or item.get("advertType") or ""
     direct_offer = str(advertiser).lower() in ("private", "owner", "prywatne")

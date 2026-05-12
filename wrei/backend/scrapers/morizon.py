@@ -7,10 +7,11 @@ from bs4 import BeautifulSoup
 from backend.scraper_utils import (
     apply_filters,
     build_query_string,
-    fetch_html,
     normalize_rooms_value,
     room_matches,
 )
+
+from backend.http_client import fetch_html_with_session
 
 MORIZON_BASE_URL = "https://www.morizon.pl/mieszkania/warszawa"
 
@@ -131,7 +132,11 @@ def search(
             page=page,
         )
         print(f"Fetching Morizon page {page}: {url}")
-        html = fetch_html(url)
+        html = fetch_html_with_session(
+            url,
+            homepage_url="https://www.morizon.pl",
+            portal="morizon",
+        )
         if not html:
             break
         listings = extract_listings_from_html(html)

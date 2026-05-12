@@ -1,163 +1,179 @@
-import re
-import requests
-from backend.scraper_utils import apply_filters
+# backend/scrapers/nieruchomosci_online.py
+import json, re, logging
+from bs4 import BeautifulSoup
+from backend.scraper_utils import apply_filters, fetch_html, validate_listing
 
-# Publiczne API — nie wymaga auth
-NIERUCHOMOSCI_ONLINE_API = "https://www.nieruchomosci-online.pl/ajax/offers/search"
+logger = logging.getLogger(__name__)
 
+NO_BASE = "https://www.nieruchomosci-online.pl/szukaj.html"
 
 def available():
     return "nieruchomosci_online"
 
-
-def build_api_params(
-    min_price=None, max_price=None,
-    min_area=None, max_area=None,
-    rooms=None, page=1,
-) -> dict:
-    params = {
-        "transaction": "1",       # 1 = sprzedaż
-        "category": "1",          # 1 = mieszkanie
-        "location[city]": "Warszawa",
-        "location[province]": "mazowieckie",
-        "page": str(page),
-        "limit": "50",
-        "sortBy": "newest",
-    }
-    if min_price:
-        params["priceMin"] = str(min_price)
-    if max_price:
-        params["priceMax"] = str(max_price)
-    if min_area:
-        params["areaMin"] = str(min_area)
-    if max_area:
-        params["areaMax"] = str(max_area)
+def build_no_url(min_price=None, max_price=None, min_area=None, max_area=None,
+                  rooms=None, page=1) -> str:
+    # Portal używa hash-based filtrów: /szukaj.html#mieszkania-na-sprzedaz;...
+    # Ale GET params też działają
+    params = [
+        "2",        # typ: mieszkanie
+        "1",        # transakcja: sprzedaz
+    ]
+    qs_parts = [f"p={page}"]
+    if min_price: qs_parts.append(f"price_from={min_price}")
+    if max_price: qs_parts.append(f"price_to={max_price}")
+    if min_area:  qs_parts.append(f"area_from={min_area}")
+    if max_area:  qs_parts.append(f"area_to={max_area}")
     if rooms:
-        rooms_str = str(rooms).split("-")[0].split(",")[0].strip()
-        if rooms_str.isdigit():
-            params["rooms"] = rooms_str
-    return params
+        r = str(rooms).split(",")[0].strip()
+        if r.isdigit(): qs_parts.append(f"rooms_from={r}&rooms_to={r}")
+    return f"{NO_BASE}?{'&'.join(qs_parts)}"
 
+def _extract_from_window_state(html: str) -> list[dict]:
+    """Portal często wstrzykuje dane jako window.__PRELOADED_STATE__ lub podobne."""
+    patterns = [
+        r'window\.__PRELOADED_STATE__\s*=\s*(\{.+?\});',
+        r'window\.__STATE__\s*=\s*(\{.+?\});',
+        r'window\.__INITIAL_DATA__\s*=\s*(\{.+?\});',
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, html, re.S)
+        if m:
+            try:
+                data = json.loads(m.group(1))
+                # Szukaj ofert w strukturze
+                offers = (data.get("offers") or data.get("listings") or
+                          data.get("search", {}).get("results") or [])
+                if offers:
+                    return offers
+            except Exception:
+                pass
+    return []
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Accept": "application/json",
-    "Referer": "https://www.nieruchomosci-online.pl/",
-    "X-Requested-With": "XMLHttpRequest",
-}
+def _parse_no_html(html: str) -> list[dict]:
+    soup = BeautifulSoup(html, "lxml")
+    listings = []
 
+    # N-Online używa różnych klas w zależności od wersji layoutu
+    cards = (
+        soup.select("article.offer-box") or
+        soup.select("div.listing-item") or
+        soup.select("[class*='offer'][class*='item']") or
+        soup.select("li[id^='offer']") or
+        soup.select("div[data-offer-id]")
+    )
 
-def normalize_listing(item: dict) -> dict | None:
-    try:
-        price = item.get("price") or item.get("totalPrice")
-        price = int(float(price)) if price else None
+    if not cards:
+        logger.warning("[N-Online] Brak kart ofert — HTML layout nieznany")
+        logger.debug("[N-Online] Tytuł strony: %s", soup.title.string if soup.title else "brak")
+        return []
 
-        area = item.get("area") or item.get("surfaceArea") or item.get("m2")
-        area = float(area) if area else None
+    for card in cards:
+        try:
+            link = card.select_one("a[href*='/oferta/'], a[href*='/offer/']")
+            if not link:
+                link = card.select_one("a[href]")
+            url = link["href"] if link else ""
+            if url and not url.startswith("http"):
+                url = f"https://www.nieruchomosci-online.pl{url}"
 
-        rooms = item.get("rooms") or item.get("roomsNumber")
+            title_el = card.select_one("h2, h3, [class*='title']")
+            title = title_el.get_text(strip=True) if title_el else "Bez tytułu"
 
-        # Lokalizacja
-        district = (
-            item.get("district")
-            or item.get("districtName")
-            or item.get("quarter")
-            or "Warszawa"
-        )
+            price_el = card.select_one("[class*='price']")
+            price_text = price_el.get_text(strip=True) if price_el else ""
+            price = None
+            digits = re.sub(r"[^\d]", "", price_text)
+            if digits and 10_000 <= int(digits) <= 100_000_000:
+                price = int(digits)
 
-        url = item.get("url") or item.get("detailUrl") or item.get("link") or ""
-        if url and not url.startswith("http"):
-            url = f"https://www.nieruchomosci-online.pl{url}"
+            area = None
+            area_m = re.search(r"(\d+(?:[.,]\d+)?)\s*m[²2]", card.get_text())
+            if area_m:
+                area = float(area_m.group(1).replace(",", "."))
 
-        title = item.get("title") or item.get("name") or f"Mieszkanie {district} {area}m²"
+            rooms = None
+            rooms_m = re.search(r"(\d)\s*pok", card.get_text(), re.I)
+            if rooms_m:
+                rooms = rooms_m.group(1)
 
-        # Bezpośredni — pole advertType lub ownerType
-        advert_type = str(item.get("advertType") or item.get("ownerType") or "").lower()
-        direct_offer = advert_type in ("private", "owner", "prywatne", "wlasciciel")
+            district = None
+            loc_el = card.select_one("[class*='location'], [class*='address'], [class*='place']")
+            if loc_el:
+                loc_text = loc_el.get_text(strip=True)
+                district = loc_text.replace("Warszawa", "").replace(",", "").strip() or None
 
-        # Zdjęcia
-        photos = item.get("photos") or item.get("images") or []
-        images = []
-        for p in photos[:5]:
-            if isinstance(p, dict):
-                images.append(p.get("url") or p.get("src") or "")
-            elif isinstance(p, str):
-                images.append(p)
-        images = [i for i in images if i]
+            images = []
+            for img in card.select("img")[:4]:
+                src = img.get("data-src") or img.get("data-lazy") or img.get("src") or ""
+                if src and src.startswith("http") and "placeholder" not in src:
+                    images.append(src)
 
-        price_per_m2 = item.get("pricePerM2") or item.get("pricePerMeter")
-        price_per_m2 = float(price_per_m2) if price_per_m2 else None
+            card_text_lower = card.get_text().lower()
+            direct_offer = any(k in card_text_lower for k in [
+                "prywatne", "właściciel", "wlasciciel", "bez pośrednika", "bez posrednika"
+            ])
 
-        if not price:
-            return None
+            listing = {
+                "portal": "nieruchomosci_online",
+                "title": title[:200],
+                "price": price,
+                "area": area,
+                "rooms": rooms,
+                "district": district,
+                "url": url,
+                "direct_offer": direct_offer,
+                "images": images,
+                "source": "nieruchomosci_online",
+            }
+            if validate_listing(listing):
+                listings.append(listing)
 
-        return {
-            "portal": "nieruchomosci_online",
-            "title": title,
-            "price": price,
-            "area": area,
-            "rooms": rooms,
-            "district": district,
-            "url": url,
-            "direct_offer": direct_offer,
-            "price_per_m2": price_per_m2,
-            "source": "nieruchomosci_online",
-            "images": images,
-        }
-    except Exception as e:
-        print(f"[Nieruchomosci-online] Błąd normalizacji: {e}")
-        return None
+        except Exception as e:
+            logger.debug("[N-Online] Błąd karty: %s", e)
+            continue
 
+    return listings
 
-def search(
-    min_price=None, max_price=None,
-    min_area=None, max_area=None,
-    rooms=None, pages=1, direct_only=False,
-    **kwargs,
-) -> list[dict]:
+def search(min_price=None, max_price=None, min_area=None, max_area=None,
+           rooms=None, pages=1, direct_only=False, **kwargs) -> list[dict]:
     all_listings = []
     for page in range(1, pages + 1):
-        params = build_api_params(
-            min_price=min_price, max_price=max_price,
-            min_area=min_area, max_area=max_area,
-            rooms=rooms, page=page,
-        )
-        print(f"[Nieruchomosci-online] Strona {page}: {NIERUCHOMOSCI_ONLINE_API}")
-        try:
-            response = requests.get(
-                NIERUCHOMOSCI_ONLINE_API,
-                params=params,
-                headers=HEADERS,
-                timeout=20,
-            )
-            response.raise_for_status()
-            data = response.json()
-        except Exception as e:
-            print(f"[Nieruchomosci-online] Błąd zapytania: {e}")
+        url = build_no_url(min_price, max_price, min_area, max_area, rooms, page)
+        logger.info("[N-Online] Strona %d: %s", page, url)
+        html = fetch_html(url, portal="nieruchomosci_online")
+        if not html:
             break
 
-        # Typowe struktury odpowiedzi API
-        items = (
-            data.get("offers")
-            or data.get("items")
-            or data.get("results")
-            or data.get("data")
-            or []
-        )
-        if isinstance(items, dict):
-            items = items.get("items") or items.get("offers") or []
+        items = _extract_from_window_state(html)
+        if items:
+            listings = []
+            for item in items:
+                # Normalizuj strukturę window.__STATE__
+                price = item.get("price") or item.get("totalPrice")
+                area  = item.get("area") or item.get("m2")
+                listing = {
+                    "portal": "nieruchomosci_online",
+                    "title": item.get("title") or item.get("name") or "",
+                    "price": int(float(price)) if price else None,
+                    "area": float(area) if area else None,
+                    "rooms": str(item.get("rooms") or ""),
+                    "district": item.get("district") or item.get("quarter") or None,
+                    "url": item.get("url") or item.get("link") or "",
+                    "direct_offer": str(item.get("advertType", "")).lower() in ("private", "owner"),
+                    "images": item.get("photos") or item.get("images") or [],
+                    "source": "nieruchomosci_online",
+                }
+                if validate_listing(listing):
+                    listings.append(listing)
+            logger.info("[N-Online] window.__STATE__: %d ofert", len(listings))
+        else:
+            listings = _parse_no_html(html)
+            logger.info("[N-Online] HTML: %d ofert", len(listings))
 
-        listings = [n for item in items if (n := normalize_listing(item))]
-        print(f"[Nieruchomosci-online] Znaleziono {len(listings)} ofert na stronie {page}")
         if not listings:
-            # Debug
-            print(f"[Nieruchomosci-online] Klucze odpowiedzi: {list(data.keys()) if isinstance(data, dict) else type(data)}")
             break
         all_listings.extend(listings)
 
-    return apply_filters(
-        all_listings,
-        min_price=min_price, max_price=max_price,
-        min_area=min_area, max_area=max_area,
-        rooms=rooms, direct_only=direct_only,
-    )
+    return apply_filters(all_listings, min_price=min_price, max_price=max_price,
+                         min_area=min_area, max_area=max_area, rooms=rooms,
+                         direct_only=direct_only)

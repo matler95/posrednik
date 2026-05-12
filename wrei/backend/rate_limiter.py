@@ -8,13 +8,12 @@ logger = logging.getLogger(__name__)
 PORTAL_DELAYS = {
     "otodom":               1.5,
     "olx":                  1.0,
-    "gratka":               2.0,
-    "morizon":              2.0,
-    "domiporta":            1.5,
-    "nieruchomosci_online": 1.0,
+    "gratka":               2.5,   # było 2.0 — zwiększ bo mają anty-bot
+    "morizon":              2.5,   # j.w.
+    "domiporta":            2.0,
+    "nieruchomosci_online": 1.5,   # było 1.0
     "default":              1.5,
 }
-
 
 class TokenBucket:
     """

@@ -1,9 +1,13 @@
+from backend.scraper_utils import validate_listing
 import re
 from bs4 import BeautifulSoup
 from backend.scraper_utils import apply_filters, build_query_string, fetch_html
+from backend.http_client import fetch_html_with_session
+import logging
 
 GRATKA_BASE_URL = "https://gratka.pl/nieruchomosci/mieszkania/warszawa"
 
+logger = logging.getLogger(__name__)
 
 def available():
     return "gratka"
@@ -53,43 +57,63 @@ def extract_area(text: str) -> float | None:
 
 
 def extract_listings_from_html(html: str) -> list[dict]:
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(html, "lxml")
     listings = []
 
-    # Gratka often uses article tags for offers
-    cards = soup.find_all("article")
+    # Gratka: karty mają data-id lub data-listing-id
+    cards = (
+        soup.select("article[data-listing-id]") or
+        soup.select("article[data-id]") or
+        soup.select("div[class*='listing-item']") or
+        soup.select("article.offer")
+    )
+
     for card in cards:
         try:
-            # URL i Tytuł
-            link = card.find("a", href=re.compile(r"/nieruchomosci/"))
+            link = card.select_one("a[href*='/nieruchomosci/']")
             if not link: continue
             url = link["href"]
-            if url.startswith("/"): url = f"https://gratka.pl{url}"
-            title = link.get_text(strip=True)
+            if not url.startswith("http"):
+                url = f"https://gratka.pl{url}"
 
-            # Cena
-            price_elem = card.find(class_=re.compile(r"price|cena"))
-            price_text = price_elem.get_text(strip=True) if price_elem else ""
-            price = extract_price(price_text)
+            title_el = card.select_one("h2, h3, [class*='title']")
+            title = title_el.get_text(strip=True) if title_el else "Bez tytułu"
 
-            # Metraż
-            area = extract_area(card.get_text())
+            # Cena: szukaj span z atrybutem data lub klasą price
+            price_el = (card.select_one("[data-price]") or
+                       card.select_one("[class*='price']"))
+            price = None
+            if price_el:
+                raw = price_el.get("data-price") or price_el.get_text(strip=True)
+                digits = re.sub(r"[^\d]", "", raw)
+                if digits and 10_000 <= int(digits) <= 100_000_000:
+                    price = int(digits)
 
-            if price:
-                listings.append({
-                    "portal": "gratka",
-                    "title": title,
-                    "price": price,
-                    "area": area,
-                    "district": "Warszawa",
-                    "url": url,
-                    "source": "gratka",
-                })
-        except:
-            continue
+            area = None
+            area_m = re.search(r"(\d+(?:[.,]\d+)?)\s*m[²2]", card.get_text())
+            if area_m:
+                area = float(area_m.group(1).replace(",", "."))
+
+            listing = {
+                "portal": "gratka",
+                "title": title[:200],
+                "price": price,
+                "area": area,
+                "district": None,
+                "url": url,
+                "source": "gratka",
+            }
+            if validate_listing(listing):
+                listings.append(listing)
+        except Exception as e:
+            logger.debug("[Gratka] Błąd karty: %s", e)
+
+    if not listings:
+        logger.warning("[Gratka] 0 ofert — możliwy 403 lub zmiana struktury HTML")
+        for art in soup.find_all("article")[:3]:
+            logger.debug("[Gratka] Klasy article: %s", art.get("class"))
 
     return listings
-
 
 
 def search(
@@ -106,7 +130,12 @@ def search(
             rooms=rooms, direct_only=direct_only, page=page,
         )
         print(f"[Gratka] Strona {page}: {url}")
-        html = fetch_html(url)
+        html = fetch_html_with_session(
+            url,
+            homepage_url="https://www.gratka.pl",  # lub gratka.pl
+            portal="gratka",
+)
+
         if not html:
             break
         listings = extract_listings_from_html(html)

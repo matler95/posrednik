@@ -206,3 +206,46 @@ async def fetch_json_async(
             return None
 
     return None
+
+    # backend/http_client.py — dodaj na końcu pliku
+
+def fetch_html_with_session(
+    url: str,
+    homepage_url: str,
+    portal: str = "default",
+    timeout: float = 20.0,
+) -> str:
+    """
+    Pobiera HTML z preflightem — najpierw odwiedza homepage żeby zdobyć cookies,
+    potem pobiera właściwy URL z tą samą sesją. Używać dla portali z 403.
+    """
+    from backend.rate_limiter import rate_limiter
+
+    headers = random_headers({
+        "Referer": homepage_url,
+        "Origin": homepage_url.rstrip("/"),
+    })
+
+    with httpx.Client(
+        timeout=timeout,
+        follow_redirects=True,
+        headers=headers,
+    ) as client:
+        # Krok 1: homepage — zdobądź cookies
+        try:
+            rate_limiter.wait(portal)
+            client.get(homepage_url)
+        except Exception:
+            pass  # Nie fail jeśli homepage nie odpowiada
+
+        # Krok 2: właściwy URL z cookies z sesji
+        try:
+            rate_limiter.wait(portal)
+            resp = client.get(url, headers=random_headers({"Referer": homepage_url}))
+            if resp.status_code == 200:
+                return resp.text
+            logger.warning("[HTTP session] %s → status %d", url, resp.status_code)
+        except Exception as e:
+            logger.error("[HTTP session] %s → %s", url, e)
+
+    return ""
