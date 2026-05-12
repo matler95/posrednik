@@ -36,9 +36,28 @@ app.add_middleware(
 )
 
 
+# backend/main.py — w startup()
 @app.on_event("startup")
 async def startup():
     init_db()
+    
+    # Generuj market_stats jeśli puste ale mamy dane
+    try:
+        from backend.db import get_conn, generate_market_stats
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM market_stats")
+        ms_count = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM listings")
+        l_count = cur.fetchone()[0]
+        cur.close(); conn.close()
+        
+        if ms_count == 0 and l_count > 10:
+            logger.info("[Startup] Generuję market_stats...")
+            await asyncio.get_event_loop().run_in_executor(None, generate_market_stats)
+    except Exception as e:
+        logger.warning("[Startup] market_stats init: %s", e)
+    
     asyncio.create_task(_llm_queue_loop())
     try:
         from backend.scheduler import start_scheduler

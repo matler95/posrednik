@@ -85,10 +85,15 @@ def update_rcn_data(city_slugs: list[str] | None = None, days: int = 30):
 
 
 
-def initial_rcn_load(city_slugs: list[str] | None = None, years: int = 5):
-    """Pełne pobieranie historyczne (tylko raz przy starcie jeśli baza pusta)."""
+# backend/scheduler.py — zmień initial_rcn_load
+def initial_rcn_load(city_slugs=None, years=5):
+    """
+    Strategia:
+    - Pierwsza sesja: pobierz ostatnie 90 dni (szybko, ~10 stron)
+    - Background: dogłębne pobieranie historii w tle (bez blokowania)
+    """
     import os
-    from backend.scrapers.deweloperuch import fetch_historical
+    from backend.scrapers.deweloperuch import fetch_recent, fetch_historical
     from backend.db import save_transaction_prices, get_conn
 
     cities = city_slugs or [c.strip() for c in os.getenv("TARGET_CITIES", "warszawa").split(",")]
@@ -97,18 +102,56 @@ def initial_rcn_load(city_slugs: list[str] | None = None, years: int = 5):
     count = cur.fetchone()[0]
     cur.close(); conn.close()
 
-    if count > 0:
-        logger.info("[RCN] Baza już zawiera %d rekordów — pomijam initial load.", count)
+    if count > 1000:
+        logger.info("[RCN] Baza zawiera %d rekordów — pomijam initial load", count)
         return
 
-    logger.info("[RCN] Pusta baza — ładuję historię %d lat...", years)
+    logger.info("[RCN] Initial load: ostatnie 90 dni (fast start)...")
     for city in cities:
         try:
+            # Szybki start: 90 dni, max 20 stron
+            transactions = fetch_recent(city, days=90, max_pages=20)
+            saved = save_transaction_prices(transactions)
+            logger.info("[RCN] %s fast-start: %d transakcji", city, saved)
+        except Exception:
+            logger.exception("[RCN] Fast-start error dla: %s", city)
+
+    # Background: historia 5 lat w tle (nie blokuje startu)
+    scheduler.add_job(
+        _background_historical_load,
+        "date",
+        id="bg_historical_rcn",
+        replace_existing=True,
+        kwargs={"cities": cities, "years": years}
+    )
+
+def _background_historical_load(cities, years=5):
+    """Pobieranie historii w tle — uruchamiane po fast-start."""
+    from backend.scrapers.deweloperuch import fetch_historical
+    from backend.db import save_transaction_prices
+    for city in cities:
+        try:
+            logger.info("[RCN BG] Historia %d lat dla %s...", years, city)
             transactions = fetch_historical(city, years=years)
             saved = save_transaction_prices(transactions)
-            logger.info("[RCN] %s: załadowano %d transakcji historycznych", city, saved)
+            logger.info("[RCN BG] %s: %d historycznych transakcji", city, saved)
         except Exception:
-            logger.exception("[RCN] Błąd historical load dla: %s", city)
+            logger.exception("[RCN BG] Error dla: %s", city)
+    try:
+        from backend.db import generate_market_stats
+        generate_market_stats()
+        logger.info("[RCN BG] market_stats zaktualizowane po historical load")
+    except Exception as e:
+        logger.warning("[RCN BG] Stats error: %s", e)
+    
+    # Geocoding bez rate-limitu Nominatim — używamy tylko regex (instant)
+    try:
+        from backend.scrapers.deweloperuch import batch_geocode_missing
+        for city in cities:
+            updated = batch_geocode_missing(city, limit=5000)  # regex jest instant
+            logger.info("[RCN BG] Geocoding regex: %d rekordów dla %s", updated, city)
+    except Exception as e:
+        logger.warning("[RCN BG] Geocoding error: %s", e)
 
 
 # ─────────────────────────────────────────────
@@ -146,14 +189,22 @@ def geocode_pending():
 # 4. Kolejka LLM (Ollama text)
 # ─────────────────────────────────────────────
 
+# backend/scheduler.py — zastąp process_llm_queue_sync
 def process_llm_queue_sync():
-    """Wrapper synchroniczny dla async process_llm_queue."""
-    from backend.nlp.llm_scorer import process_llm_queue
+    """Wrapper synchroniczny — tworzy nowy event loop zamiast asyncio.run()."""
+    import asyncio
+    from backend.nlp.llm_scorer import run_llm_queue_once
     try:
-        asyncio.run(process_llm_queue())
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            processed = loop.run_until_complete(run_llm_queue_once(batch_size=5))
+            logger.info("[LLM Scheduler] Przetworzono %d ofert", processed)
+        finally:
+            loop.close()
+            asyncio.set_event_loop(None)
     except Exception:
         logger.exception("[LLM] Błąd kolejki LLM")
-
 
 # ─────────────────────────────────────────────
 # 5. Kolejka photo (CLIP + Ollama Vision)

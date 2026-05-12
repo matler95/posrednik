@@ -28,49 +28,44 @@ def _load_model_if_needed():
         logger.error(f"[ML] Nie udalo sie wczytac modelu: {e}")
         return False
 
+# backend/ml/predictor.py — zastąp całość
 def predict_value(listing, market_stats_averages=None):
     """
-    Przewiduje cenę dla ogłoszenia używając modelu ML.
-    Zwraca (wartość, is_ml) gdzie is_ml=True jeśli użyto ML.
-    Jeśli model niedostępny, odpala fallback na podstawie averages.
+    Fallback hierarchy:
+    1. ML model (joblib) jeśli istnieje i załadowany
+    2. District median z market_stats_averages (grupowa z aktualnych ofert)
+    3. Ogólna mediana Warszawa z averages
     """
+    # Próba ML
     if _load_model_if_needed():
         try:
             feats = extract_features(listing)
             dist = listing.get("district") or "Warszawa"
-            
-            # Target encoding z wyuczonego modelu
-            encoded = _LATEST_META.get(dist)
-            if not encoded:
-                # Jesli nie zna dzielnicy, bierzemy srednia wartosc z calego miasta (aproksymacja z wartosci znanych)
-                vals = list(_LATEST_META.values())
-                encoded = sum(vals) / len(vals) if vals else 10000.0
-                
+            encoded = _LATEST_META.get(dist) or (
+                sum(_LATEST_META.values()) / len(_LATEST_META) 
+                if _LATEST_META else 10000.0
+            )
             x_vec = [
-                feats["area"],
-                feats["rooms"],
-                feats["floor_ratio"],
-                feats["year_built"],
-                feats["condition_encoded"],
-                feats["building_type_encoded"],
-                feats["has_balcony"],
-                feats["has_parking"],
-                feats["has_elevator"],
-                feats["has_storage"],
-                feats["ownership_encoded"],
-                encoded
+                feats["area"], feats["rooms"], feats["floor_ratio"],
+                feats["year_built"], feats["condition_encoded"],
+                feats["building_type_encoded"], feats["has_balcony"],
+                feats["has_parking"], feats["has_elevator"],
+                feats["has_storage"], feats["ownership_encoded"], encoded
             ]
-            
             val = _LATEST_MODEL.predict([x_vec])[0]
             return float(val), True
         except Exception as e:
-            logger.error(f"[ML] Blad podczas ewaluacji modelu dla oferty: {e}")
-            
-    # Fallback
+            logger.debug("[ML] Predict error: %s", e)
+
+    # Fallback: district average z bieżących ofert
     if market_stats_averages and listing.get("area"):
         district = listing.get("district") or "Warszawa"
-        base_price = market_stats_averages.get(district) or market_stats_averages.get("Warszawa")
-        if base_price:
-            return round(base_price * listing["area"]), False
-            
+        base_psm = (
+            market_stats_averages.get(district) 
+            or market_stats_averages.get("Warszawa")
+        )
+        if base_psm and base_psm > 0:
+            estimated = round(base_psm * listing["area"])
+            return estimated, False
+
     return None, False

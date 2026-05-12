@@ -12,6 +12,7 @@ from pathlib import Path
 
 import psycopg2
 from psycopg2.extras import Json, execute_values
+from psycopg2.extras import register_default_jsonb
 
 logger = logging.getLogger(__name__)
 
@@ -21,13 +22,15 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def get_conn():
-    return psycopg2.connect(
+    conn = psycopg2.connect(
         dbname=os.getenv("POSTGRES_DB", "wrei"),
         user=os.getenv("POSTGRES_USER", "postgres"),
         password=os.getenv("POSTGRES_PASSWORD", "postgres"),
         host=os.getenv("POSTGRES_HOST", "db"),
         port=int(os.getenv("POSTGRES_PORT", 5432)),
     )
+    register_default_jsonb(conn)  # JSONB → dict automatycznie
+    return conn
 
 
 # ---------------------------------------------------------------------------

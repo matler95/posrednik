@@ -71,10 +71,12 @@ WARSAW_DISTRICT_PATTERNS: dict[str, list[str]] = {
         r"\bwola\b", r"wolsk", r"mlynarska", r"chlodn", r"kasprzaka",
         r"dzialdowsk", r"redutow", r"sowinska", r"gorczewsk", r"skierniewick",
         r"korotynskieg", r"elekcyjn", r"obozow", r"deotymy",
+        r"\bwoli\b", r"na woli",
     ],
     "Ochota": [
         r"ochot", r"raszynsk", r"grojecka", r"opaczewsk", r"kopinska",
         r"siewiersk", r"gajowa", r"barska", r"filtrowa",
+        r"szczesnowicach", r"rakowiec",
     ],
     "Praga-Południe": [
         r"praga.poludnie", r"grochow", r"saska kepa", r"saskiej kepy",

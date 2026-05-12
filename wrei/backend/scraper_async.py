@@ -81,29 +81,32 @@ async def _run_portal_async(
     city_slug: str,
     progress_cb: Callable | None = None,
 ) -> list[dict]:
-    """
-    Uruchamia jeden scraper synchroniczny w osobnym wątku (run_in_executor).
-    Nie blokuje event loop. Taguje każdą ofertę city_slug.
-    """
     loop = asyncio.get_event_loop()
+    SCRAPER_TIMEOUT = 120  # 2 minuty max per portal
     try:
         logger.info("[Hunt] Start: %s / %s", portal_name, city_slug)
         t0 = time.time()
-        results = await loop.run_in_executor(None, lambda: scraper_fn(**params))
+        
+        future = loop.run_in_executor(None, lambda: scraper_fn(**params))
+        results = await asyncio.wait_for(future, timeout=SCRAPER_TIMEOUT)
+        
         elapsed = time.time() - t0
-
-        # FIX: przekaż city_slug do każdej oferty
         for listing in results:
             if not listing.get("city_slug"):
                 listing["city_slug"] = city_slug
-
+        
         logger.info("[Hunt] %s: %d ofert w %.1fs", portal_name, len(results), elapsed)
-
         if progress_cb:
             await progress_cb(portal_name, len(results))
         return results
+        
+    except asyncio.TimeoutError:
+        logger.error("[Hunt] TIMEOUT %s po %ds — pomijam portal", portal_name, SCRAPER_TIMEOUT)
+        if progress_cb:
+            await progress_cb(portal_name, 0)
+        return []
     except Exception as e:
-        logger.error("[Hunt] Błąd portalu %s: %s", portal_name, e, exc_info=True)
+        logger.error("[Hunt] Błąd portalu %s: %s", portal_name, e)
         if progress_cb:
             await progress_cb(portal_name, 0)
         return []
