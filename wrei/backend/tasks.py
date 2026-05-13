@@ -151,63 +151,96 @@ async def send_daily_digest_task(ctx):
     from backend.alerts.channels import send_daily_digest
     await asyncio.to_thread(send_daily_digest)
 
-async def import_rcn_history_task(ctx, city_slug: str, years: int):
-    from backend.scrapers.deweloperuch import iter_transactions
+async def import_rcn_history_task(ctx, city_slug: str, years: float = 20):
+    """
+    Task workerowy wykonujący import historyczny RCN paczkami kwartalnymi.
+    Dzięki filtrowi filterLastTransactionDate=YYYY-Q-YYYY-Q obchodzimy limity stron API.
+    
+    Parametr years określa jak daleko wstecz szukamy danych.
+    """
+    from backend.scrapers.deweloperuch import iter_transactions, generate_quarter_ranges
     from backend.db import save_transaction_prices, get_checkpoint, save_checkpoint
-    from datetime import date, datetime
+    from datetime import date
     import asyncio
     
-    target_year = 2000 # Pobieramy wszystko co mają (baza zaczyna się ok. 2006)
-    job_key = f"rcn_history_final:{city_slug}:{years}y"
+    # Obliczamy rok początkowy na podstawie parametru years
+    end_date = date.today()
+    calculated_start_year = end_date.year - int(years) if years >= 1 else end_date.year
+    
+    # Deweloperuch ma dane od ok. 2006
+    start_year = max(2006, calculated_start_year)
+    end_year = end_date.year
+    end_quarter = (end_date.month - 1) // 3 + 1
+    
+    # Klucz checkpointu zależy od miasta i zakresu (full vs recent)
+    is_full_sync = years >= 10
+    job_type = "full" if is_full_sync else "recent"
+    job_key = f"rcn_sync_{job_type}:{city_slug}"
+    
     checkpoint = get_checkpoint(job_key) or {}
-    current_page = checkpoint.get("last_page", 1)
+    
+    # Lista wszystkich kwartałów do przerobienia
+    all_ranges = generate_quarter_ranges(start_year, end_year, end_quarter)
+    
+    # Znajdujemy gdzie skończyliśmy (ostatni udany kwartał)
+    last_completed_range = checkpoint.get("last_completed_range")
+    start_idx = 0
+    if last_completed_range in all_ranges:
+        start_idx = all_ranges.index(last_completed_range) + 1
+    
     total_saved = checkpoint.get("total_saved", 0)
     
-    print(f"[Worker] Rozpoczynam CIĄGŁY import RCN wstecz do roku {target_year}. Start od strony {current_page}", flush=True)
+    print(f"[Worker] Rozpoczynam PEŁNY import RCN ({city_slug}). Do przerobienia {len(all_ranges) - start_idx} kwartałów.", flush=True)
     
-    processed_count = 0
-    batch = []
-    
-    try:
-        # iter_transactions zajmuje się normalizacją (dodaje pola city, city_slug itp.)
-        for tx in iter_transactions(city_slug, start_page=current_page):
-            # Sprawdzamy datę, żeby wiedzieć kiedy przestać (target_year = 2000)
-            cdate_str = tx.get("creation_date")
-            if cdate_str:
-                try:
-                    cdate = datetime.strptime(cdate_str, "%Y-%m-%d").date()
-                    if cdate.year < target_year:
-                        print(f"[Worker] Osiągnięto datę graniczną: {cdate_str}. Kończę import.", flush=True)
-                        break
-                except: pass
+    for i in range(start_idx, len(all_ranges)):
+        q_range = all_ranges[i]
+        print(f"[Worker] Pobieram kwartał: {q_range}...", flush=True)
+        
+        quarter_records = 0
+        batch = []
+        
+        try:
+            # Iterujemy po stronach wewnątrz JEDNEGO kwartału
+            for tx in iter_transactions(city_slug, last_transaction_date=q_range):
+                batch.append(tx)
+                quarter_records += 1
+                
+                if len(batch) >= 200:
+                    saved = save_transaction_prices(batch)
+                    total_saved += saved
+                    batch = []
+                    await asyncio.sleep(0.1)
             
-            batch.append(tx)
-            processed_count += 1
-            
-            if len(batch) >= 500:
+            if batch:
                 saved = save_transaction_prices(batch)
                 total_saved += saved
-                # Wyliczamy przybliżoną stronę na podstawie PER_PAGE=50
-                current_page = checkpoint.get("last_page", 1) + (processed_count // 50)
-                
-                print(f"  -> Przetworzono {processed_count} (Nowych: {saved}, Suma: {total_saved}, Strona ok. {current_page})", flush=True)
-                save_checkpoint(job_key, {"last_page": current_page, "total_saved": total_saved})
-                batch = []
-                await asyncio.sleep(0.5)
-
-        if batch:
-            saved = save_transaction_prices(batch)
-            total_saved += saved
-            print(f"[Worker] Finalizacja paczki. Nowych: {saved}, Suma: {total_saved}", flush=True)
             
-    except Exception as e:
-        print(f"[Worker] Błąd krytyczny importu: {e}", flush=True)
-        # Checkpoint jest zapisywany w pętli co 500 rekordów
+            print(f"  -> Kwartał {q_range} zakończony. Pobrano {quarter_records} rekordów. Suma: {total_saved}", flush=True)
             
-    save_checkpoint(job_key, {"last_page": current_page, "total_saved": total_saved, "status": "completed"})
-    print(f"[Worker] IMPORT ZAKOŃCZONY. Łącznie w bazie: {total_saved} rekordów.", flush=True)
-    
-    logger.info("[Worker] KOMPLETNY IMPORT ZAKOŃCZONY. Łącznie: %d rekordów.", total_saved)
+            # Zapisujemy checkpoint po każdym pełnym kwartale
+            save_checkpoint(job_key, {
+                "last_completed_range": q_range,
+                "total_saved": total_saved,
+                "status": "in_progress",
+                "last_update": date.today().isoformat()
+            })
+            
+            # Lekki delay między kwartałami dla bezpieczeństwa (rate limit)
+            await asyncio.sleep(2.0)
+            
+        except Exception as e:
+            print(f"[Worker] Błąd podczas kwartału {q_range}: {e}", flush=True)
+            # Nie przerywamy całego procesu, może następny kwartał zadziała
+            await asyncio.sleep(10)
+            continue
+            
+    save_checkpoint(job_key, {
+        "status": "completed",
+        "total_saved": total_saved,
+        "last_update": date.today().isoformat()
+    })
+    print(f"[Worker] PEŁNY IMPORT ZAKOŃCZONY. Łącznie w bazie: {total_saved} rekordów.", flush=True)
+    logger.info("[Worker] RCN Full Import Finished. Total: %d", total_saved)
 
 async def startup(ctx):
     ctx['redis'] = await create_pool(RedisSettings(host=REDIS_HOST))

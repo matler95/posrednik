@@ -29,7 +29,7 @@ DEFAULT_HEADERS = {
     "Referer": "https://deweloperuch.pl/",
     "Accept": "application/json",
 }
-PER_PAGE = 50
+PER_PAGE = 100
 DOWNLOAD_TIMEOUT = 60.0
 RATE_LIMIT_SLEEP = 1.2
 
@@ -347,10 +347,11 @@ def iter_transactions(
     """
     with httpx.Client(headers=DEFAULT_HEADERS) as client:
         page = start_page
-        total_pages = None
         total_records = 0
         total_with_district = 0
-
+        total_pages = None
+        total = 0
+        seen_ids_in_session = set()
         while True:
             if max_pages and page > max_pages:
                 break
@@ -372,13 +373,18 @@ def iter_transactions(
                     city_slug, total, total_pages
                 )
 
+            new_in_page = 0
             for record in records:
                 normalized = _normalize(record, city_slug)
                 if normalized.get("sale_rcn_id") and normalized.get("amount_sqm"):
                     total_records += 1
                     if normalized.get("district"):
                         total_with_district += 1
-                    yield normalized
+                    
+                    if normalized["sale_rcn_id"] not in seen_ids_in_session:
+                        seen_ids_in_session.add(normalized["sale_rcn_id"])
+                        new_in_page += 1
+                        yield normalized
 
             if page % 10 == 0:
                 pct = round(total_with_district / total_records * 100, 1) if total_records else 0
@@ -388,7 +394,14 @@ def iter_transactions(
                 )
 
             # Ignorujemy total_pages, bo API często zwraca błędne (zaniżone) wartości (np. 20 stron zamiast 4000)
-            # Pętla skończy się, gdy 'records' będzie puste.
+            # Pętla skończy się, gdy 'records' będzie puste lub same duplikaty.
+            if not records:
+                break
+            
+            if len(records) > 0 and new_in_page == 0:
+                logger.info("[Deweloperuch] Strona %d zawiera same znane rekordy — kończę zakres.", page)
+                break
+                
             page += 1
             time.sleep(RATE_LIMIT_SLEEP)
 
@@ -426,6 +439,19 @@ def fetch_historical(
         years, city_slug, date_from
     )
     return list(iter_transactions(city_slug, date_from=date_from))
+
+
+def generate_quarter_ranges(start_year: int, end_year: int, end_quarter: int) -> list[str]:
+    """
+    Generuje listę kwartałów w formacie 'YYYY-Q-YYYY-Q' od start_year-1 do end_year-end_quarter.
+    Przykład: 2023, 2024, 1 -> ['2023-1-2023-1', '2023-2-2023-2', ..., '2024-1-2024-1']
+    """
+    ranges = []
+    for y in range(start_year, end_year + 1):
+        max_q = end_quarter if y == end_year else 4
+        for q in range(1, max_q + 1):
+            ranges.append(f"{y}-{q}-{y}-{q}")
+    return ranges
 
 
 # ---------------------------------------------------------------------------

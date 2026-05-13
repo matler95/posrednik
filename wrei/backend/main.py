@@ -52,12 +52,22 @@ async def shutdown_event():
     logger.info("[Main] System shutdown.")
 
 @app.on_event("startup")
-async def startup():
+async def startup_event():
+    """Startup routine: migrations, market stats, and RCN ingestion."""
     init_db()
     
-    # 1. Market stats generation
+    # 1. Market stats check
+    asyncio.create_task(_ensure_market_stats())
+
+    # 2. RCN Initial Ingestion check
+    asyncio.create_task(_enqueue_initial_rcn_ingest())
+
+    logger.info("[WREI] Backend v3.0 (Modular + Distributed) is ready.")
+
+async def _ensure_market_stats():
+    """Generates market stats if missing and data is available."""
     try:
-        from backend.db import generate_market_stats
+        from backend.db import generate_market_stats, get_conn
         with get_conn() as conn:
             cur = conn.cursor()
             cur.execute("SELECT COUNT(*) FROM market_stats")
@@ -66,37 +76,40 @@ async def startup():
             l_count = cur.fetchone()[0]
         
         if ms_count == 0 and l_count > 10:
-            logger.info("[Startup] Generuję market_stats...")
-            await asyncio.get_event_loop().run_in_executor(None, generate_market_stats)
+            logger.info("[Startup] Missing market_stats. Generating...")
+            await asyncio.to_thread(generate_market_stats)
     except Exception as e:
-        logger.warning("[Startup] Market stats check error: %s", e)
+        logger.warning("[Startup] Market stats check failed: %s", e)
 
-    # 2. RCN Auto-ingest (Robust Initial Load)
+async def _enqueue_initial_rcn_ingest():
+    """Enqueues RCN ingestion based on current DB state."""
     try:
         from arq import create_pool
         from arq.connections import RedisSettings
-        REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+        from backend.db import get_conn
+        
+        REDIS_HOST = os.getenv("REDIS_HOST", "redis")
         
         with get_conn() as conn:
             cur = conn.cursor()
             cur.execute("SELECT COUNT(*) FROM transaction_prices")
             rcn_count = cur.fetchone()[0]
         
-        async def _queue_tasks():
-            redis = await create_pool(RedisSettings(host=REDIS_HOST))
-            # If almost empty, get 7 years (back to Q1 2019)
-            if rcn_count < 10000:
-                logger.info("[Startup] Baza RCN jest pusta lub mała (%d). Kolejkuję 7 lat historii (od 2019)...", rcn_count)
-                await redis.enqueue_job('import_rcn_history_task', "warszawa", 7)
-            else:
-                # Regular catch-up (last 30 days)
-                logger.info("[Startup] Catch-up RCN (ostatnie 30 dni)...")
-                await redis.enqueue_job('import_rcn_history_task', "warszawa", 0.08) # ~30 days
-            await redis.close()
-
-        asyncio.create_task(_queue_tasks())
+        redis = await create_pool(RedisSettings(host=REDIS_HOST))
+        
+        if rcn_count < 100:
+            # Empty DB: Full history (20 years)
+            logger.info("[Startup] RCN database empty. Enqueuing FULL history sync...")
+            await redis.enqueue_job('import_rcn_history_task', "warszawa", 20)
+        elif rcn_count < 10000:
+            # Partial DB: Medium history (7 years)
+            logger.info("[Startup] RCN database small (%d). Enqueuing 7-year history sync...", rcn_count)
+            await redis.enqueue_job('import_rcn_history_task', "warszawa", 7)
+        else:
+            # Healthy DB: Quick catch-up (last 30 days)
+            logger.info("[Startup] RCN database healthy. Enqueuing 30-day catch-up...")
+            await redis.enqueue_job('import_rcn_history_task', "warszawa", 0.08)
             
+        await redis.close()
     except Exception as e:
-        logger.warning("[Startup] RCN ingest error: %s", e)
-    
-    logger.info("[WREI] Backend v3.0 (Modular + Distributed) uruchomiony.")
+        logger.warning("[Startup] RCN auto-ingest failed to enqueue: %s", e)
