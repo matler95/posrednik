@@ -154,58 +154,58 @@ async def send_daily_digest_task(ctx):
 async def import_rcn_history_task(ctx, city_slug: str, years: int):
     from backend.scrapers.deweloperuch import iter_transactions
     from backend.db import save_transaction_prices, get_checkpoint, save_checkpoint
-    from datetime import date, timedelta
+    from datetime import date, datetime
     import asyncio
     
-    start_date = date.today() - timedelta(days=years * 365)
-    # Align to start of month for cleaner slicing
-    current_date = date(start_date.year, start_date.month, 1)
-    end_date = date.today()
-    
-    job_key = f"rcn_history_v2:{city_slug}:{years}y"
+    target_year = 2000 # Pobieramy wszystko co mają (baza zaczyna się ok. 2006)
+    job_key = f"rcn_history_final:{city_slug}:{years}y"
     checkpoint = get_checkpoint(job_key) or {}
-    
-    # Resume from last month if possible
-    last_month_str = checkpoint.get("last_month")
-    if last_month_str:
-        current_date = date.fromisoformat(last_month_str)
-        
+    current_page = checkpoint.get("last_page", 1)
     total_saved = checkpoint.get("total_saved", 0)
     
-    print(f"[Worker] Rozpoczynam krokowy import RCN ({years} lat) dla {city_slug} od {current_date.isoformat()}", flush=True)
+    print(f"[Worker] Rozpoczynam CIĄGŁY import RCN wstecz do roku {target_year}. Start od strony {current_page}", flush=True)
     
-    while current_date <= end_date:
-        next_month = (current_date + timedelta(days=32)).replace(day=1)
-        # Format: 2019-1-2019-1 (for one month)
-        range_str = f"{current_date.year}-{current_date.month}-{current_date.year}-{current_date.month}"
-        
-        print(f"[Worker] Pobieram okres (filterLastTransactionDate): {range_str}...", flush=True)
-        
-        month_records = 0
-        month_saved = 0
-        batch = []
-        for tx in iter_transactions(city_slug, last_transaction_date=range_str):
+    processed_count = 0
+    batch = []
+    
+    try:
+        # iter_transactions zajmuje się normalizacją (dodaje pola city, city_slug itp.)
+        for tx in iter_transactions(city_slug, start_page=current_page):
+            # Sprawdzamy datę, żeby wiedzieć kiedy przestać (target_year = 2000)
+            cdate_str = tx.get("creation_date")
+            if cdate_str:
+                try:
+                    cdate = datetime.strptime(cdate_str, "%Y-%m-%d").date()
+                    if cdate.year < target_year:
+                        print(f"[Worker] Osiągnięto datę graniczną: {cdate_str}. Kończę import.", flush=True)
+                        break
+                except: pass
+            
             batch.append(tx)
-            month_records += 1
+            processed_count += 1
             
             if len(batch) >= 500:
                 saved = save_transaction_prices(batch)
                 total_saved += saved
-                month_saved += saved
+                # Wyliczamy przybliżoną stronę na podstawie PER_PAGE=50
+                current_page = checkpoint.get("last_page", 1) + (processed_count // 50)
+                
+                print(f"  -> Przetworzono {processed_count} (Nowych: {saved}, Suma: {total_saved}, Strona ok. {current_page})", flush=True)
+                save_checkpoint(job_key, {"last_page": current_page, "total_saved": total_saved})
                 batch = []
-                save_checkpoint(job_key, {"last_month": current_date.isoformat(), "total_saved": total_saved})
-                print(f"  -> Przetworzono 500 (Nowych: {saved}, Suma zadania: {total_saved})", flush=True)
-        
+                await asyncio.sleep(0.5)
+
         if batch:
             saved = save_transaction_prices(batch)
             total_saved += saved
-            month_saved += saved
+            print(f"[Worker] Finalizacja paczki. Nowych: {saved}, Suma: {total_saved}", flush=True)
             
-        print(f"[Worker] Zakończono {range_str}. Przejrzano {month_records}, Zapisano {month_saved} nowych. Suma: {total_saved}", flush=True)
-        
-        current_date = next_month
-        save_checkpoint(job_key, {"last_month": current_date.isoformat(), "total_saved": total_saved})
-        await asyncio.sleep(2)
+    except Exception as e:
+        print(f"[Worker] Błąd krytyczny importu: {e}", flush=True)
+        # Checkpoint jest zapisywany w pętli co 500 rekordów
+            
+    save_checkpoint(job_key, {"last_page": current_page, "total_saved": total_saved, "status": "completed"})
+    print(f"[Worker] IMPORT ZAKOŃCZONY. Łącznie w bazie: {total_saved} rekordów.", flush=True)
     
     logger.info("[Worker] KOMPLETNY IMPORT ZAKOŃCZONY. Łącznie: %d rekordów.", total_saved)
 

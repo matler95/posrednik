@@ -387,9 +387,8 @@ def iter_transactions(
                     page, total_pages, total_records, pct
                 )
 
-            if page >= total_pages:
-                break
-
+            # Ignorujemy total_pages, bo API często zwraca błędne (zaniżone) wartości (np. 20 stron zamiast 4000)
+            # Pętla skończy się, gdy 'records' będzie puste.
             page += 1
             time.sleep(RATE_LIMIT_SLEEP)
 
