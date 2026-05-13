@@ -2,12 +2,12 @@
 WREI Backend — FastAPI application.
 Modularized version v3.0.
 """
-import asyncio
-import logging
-from fastapi import FastAPI
+import os
+from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 
-from backend.db import init_db
+from backend.db import init_db, get_conn
 from backend.api import listings, hunt, market, alerts, system
 
 logger = logging.getLogger(__name__)
@@ -21,12 +21,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+API_KEY = os.getenv("WREI_API_KEY")
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+async def verify_api_key(api_key: str = Depends(api_key_header)):
+    if not API_KEY:
+        # If no key is configured, allow all (or we could enforce default)
+        return
+    if api_key != API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Could not validate credentials"
+        )
+
 # Register Routers
 app.include_router(listings.router)
-app.include_router(hunt.router)
-app.include_router(market.router)
-app.include_router(alerts.router)
-app.include_router(system.router)
+app.include_router(hunt.router, dependencies=[Depends(verify_api_key)])
+app.include_router(market.router, dependencies=[Depends(verify_api_key)])
+app.include_router(alerts.router, dependencies=[Depends(verify_api_key)])
+app.include_router(system.router, dependencies=[Depends(verify_api_key)])
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    from backend.db import close_pool
+    from backend.hunt_manager import hunt_manager
+    await hunt_manager.close()
+    close_pool()
+    logger.info("[Main] System shutdown.")
 
 @app.on_event("startup")
 async def startup():
@@ -34,14 +55,13 @@ async def startup():
     
     # 1. Market stats generation
     try:
-        from backend.db import get_conn, generate_market_stats
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM market_stats")
-        ms_count = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM listings")
-        l_count = cur.fetchone()[0]
-        cur.close(); conn.close()
+        from backend.db import generate_market_stats
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM market_stats")
+            ms_count = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM listings")
+            l_count = cur.fetchone()[0]
         
         if ms_count == 0 and l_count > 10:
             logger.info("[Startup] Generuję market_stats...")
@@ -51,12 +71,10 @@ async def startup():
 
     # 2. RCN Auto-ingest
     try:
-        from backend.db import get_conn
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM transaction_prices")
-        rcn_count = cur.fetchone()[0]
-        cur.close(); conn.close()
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM transaction_prices")
+            rcn_count = cur.fetchone()[0]
         
         if rcn_count < 100:
             logger.info("[Startup] Mało danych RCN (%d). Pobieram ostatnie 90 dni...", rcn_count)

@@ -30,7 +30,11 @@ class PooledConnectionWrapper:
         if _pool is None:
             init_pool()
         self.conn = _pool.getconn()
-        register_default_jsonb(self.conn)
+        
+        # Optimization: register_default_jsonb only once per connection object
+        if not hasattr(self.conn, "_jsonb_registered"):
+            register_default_jsonb(self.conn)
+            self.conn._jsonb_registered = True
 
     def __enter__(self):
         return self

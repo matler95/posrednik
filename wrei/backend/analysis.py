@@ -254,12 +254,24 @@ def find_opportunities(listings: list[dict], threshold: float = 0.15) -> list[di
     )
 
 
-def update_text_score_from_llm(listing: dict) -> dict:
+def recalculate_listing_score_in_db(listing_id: int):
     """
-    Aktualizuje text_score oferty po otrzymaniu analizy LLM.
-    Wywoływane po zapisie llm_analysis do DB.
+    Pobiera ofertę z DB, przelicza score (uwzględniając nowe analizy LLM/Photo)
+    i zapisuje wynik z powrotem do DB.
     """
-    llm = listing.get("llm_analysis")
-    if llm and isinstance(llm, dict) and "error" not in llm:
-        listing["text_score"] = text_score_from_llm(llm)
-    return listing
+    from backend.db import get_listing_by_id, save_listing_score
+    listing = get_listing_by_id(listing_id)
+    if not listing:
+        return
+    
+    # Przeliczamy enrichment dla pojedynczej oferty
+    city_slug = listing.get("city_slug") or "warszawa"
+    
+    # Note: enrich_listings oczekuje listy i zwraca listę
+    # Przekazujemy pusty dict jako averages, bo market_position i tak 
+    # preferuje dane z DB (market_stats), które właśnie wdrożyliśmy.
+    enriched = enrich_listings([listing], city_slug=city_slug)
+    if enriched:
+        l = enriched[0]
+        save_listing_score(l["id"], l["score"], text_score=l.get("text_score"))
+        logger.info("[Analysis] Recalculated score for listing %d: %.3f", listing_id, l["score"])

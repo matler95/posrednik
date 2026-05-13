@@ -55,16 +55,50 @@ def price_gap_ratio(price: int | None, estimated_value: int | None) -> float:
     return round(max(0.0, (estimated_value - price) / estimated_value), 4)
 
 
-def market_position(listing: dict, averages: dict) -> float | None:
+def get_db_market_avg(city_slug: str, district: str | None) -> float | None:
+    """
+    Pobiera średnią cenę rynkową (ofertową) z DB (market_stats).
+    To jest lepszy benchmark niż średnia z małego batcha scrapowania.
+    """
+    try:
+        from backend.db import get_conn
+        with get_conn() as conn:
+            cur = conn.cursor()
+            if district:
+                cur.execute("""
+                    SELECT avg_price_per_m2 FROM market_stats
+                    WHERE district = %s AND rooms IS NULL AND condition IS NULL
+                      AND avg_price_per_m2 IS NOT NULL
+                    LIMIT 1
+                """, (district,))
+                row = cur.fetchone()
+                if row and row[0]:
+                    return float(row[0])
+            
+            # City-wide avg fallback
+            cur.execute("SELECT AVG(avg_price_per_m2) FROM market_stats WHERE avg_price_per_m2 IS NOT NULL AND sample_count >= 5")
+            row = cur.fetchone()
+            return float(row[0]) if row and row[0] else None
+    except Exception:
+        return None
+
+def market_position(listing: dict, averages: dict | None = None, city_slug: str = "warszawa") -> float | None:
     """
     Pozycja cenowa vs średnia rynkowa (bieżące oferty).
     >0 = taniej niż średnia, <0 = drożej.
+    Preferuje dane z DB (market_stats), fallback do batch averages.
     """
     psm = price_per_square_meter(listing)
     if not psm:
         return None
-    district = listing.get("district") or "Warszawa"
-    avg = averages.get(district) or averages.get("Warszawa")
+    
+    district = listing.get("district")
+    avg = get_db_market_avg(city_slug, district)
+    
+    # Fallback to batch-based averages if DB is empty (fresh install)
+    if not avg and averages:
+        avg = averages.get(district or "Warszawa") or averages.get("Warszawa")
+        
     if not avg or avg <= 0:
         return None
     return round((avg - psm) / avg, 4)
@@ -120,36 +154,31 @@ def get_market_stats_benchmark(city_slug: str, district: str | None) -> float | 
     """
     Pobiera medianę ceny/m² z tabeli market_stats jako fallback gdy brak RCN.
     market_stats jest agregacją bieżących ofert — gorsze niż RCN ale lepsze niż 0.
-
-    NAPRAWKA: Dzięki temu transaction_gap_ratio nie zeruje składowej 0.30
-    gdy brak danych transakcyjnych dla danej dzielnicy.
     """
     try:
         from backend.db import get_conn
-        conn = get_conn()
-        cur = conn.cursor()
-        # Próba 1: konkretna dzielnica
-        if district:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            # Próba 1: konkretna dzielnica
+            if district:
+                cur.execute("""
+                    SELECT median_price_per_m2 FROM market_stats
+                    WHERE district = %s AND rooms IS NULL AND condition IS NULL
+                      AND median_price_per_m2 IS NOT NULL
+                    LIMIT 1
+                """, (district,))
+                row = cur.fetchone()
+                if row and row[0]:
+                    return float(row[0])
+            # Próba 2: całe miasto
             cur.execute("""
-                SELECT median_price_per_m2 FROM market_stats
-                WHERE district = %s AND rooms IS NULL AND condition IS NULL
-                  AND median_price_per_m2 IS NOT NULL
-                LIMIT 1
-            """, (district,))
+                SELECT AVG(median_price_per_m2) FROM market_stats
+                WHERE median_price_per_m2 IS NOT NULL
+                  AND sample_count >= 5
+            """)
             row = cur.fetchone()
             if row and row[0]:
-                cur.close(); conn.close()
                 return float(row[0])
-        # Próba 2: całe miasto
-        cur.execute("""
-            SELECT AVG(median_price_per_m2) FROM market_stats
-            WHERE median_price_per_m2 IS NOT NULL
-              AND sample_count >= 5
-        """)
-        row = cur.fetchone()
-        cur.close(); conn.close()
-        if row and row[0]:
-            return float(row[0])
     except Exception:
         pass
     return None
@@ -227,7 +256,7 @@ def calculate_preliminary_score(
         effective_benchmark = get_market_stats_benchmark(city_slug, district)
 
     # 1. & 2. ML i RCN gaps (z proxy dla świeżych instalacji)
-    market_pos_val = market_position(listing, averages) or 0.0
+    market_pos_val = market_position(listing, averages, city_slug=city_slug) or 0.0
     is_fresh_install = (not ml_estimate or ml_estimate <= 0) and not effective_benchmark
 
     if is_fresh_install:
@@ -313,7 +342,7 @@ def score_breakdown(
         if effective_benchmark:
             used_fallback = True
 
-    market_pos_val = market_position(listing, averages) or 0.0
+    market_pos_val = market_position(listing, averages, city_slug=city_slug) or 0.0
     is_fresh_install = (not ml_estimate or ml_estimate <= 0) and not effective_benchmark
 
     if is_fresh_install:

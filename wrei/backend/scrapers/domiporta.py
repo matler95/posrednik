@@ -144,6 +144,33 @@ def _parse_html_cards(html: str) -> list[dict]:
 
     return listings
 
+def normalize_listing(item: dict) -> dict | None:
+    """Normalizuje rekord z JSON Domiporta."""
+    try:
+        url = item.get("url") or item.get("relativeUrl")
+        if url and not url.startswith("http"):
+            url = f"https://www.domiporta.pl{url}"
+        
+        listing = {
+            "portal": "domiporta",
+            "title": (item.get("title") or item.get("name") or "Bez tytułu")[:200],
+            "price": item.get("price") or item.get("totalPrice"),
+            "area": item.get("area") or item.get("squareMeters"),
+            "rooms": str(item.get("rooms") or item.get("roomCount") or ""),
+            "district": item.get("district") or item.get("location", {}).get("district"),
+            "url": url,
+            "direct_offer": bool(item.get("isPrivate") or item.get("isDirect")),
+            "price_per_m2": item.get("pricePerSquareMeter"),
+            "images": [img.get("url") for img in item.get("images", []) if isinstance(img, dict)] or item.get("photos", []),
+            "source": "domiporta",
+        }
+        from backend.scraper_utils import validate_listing
+        if validate_listing(listing):
+            return listing
+    except Exception:
+        pass
+    return None
+
 def search(min_price=None, max_price=None, min_area=None, max_area=None,
            rooms=None, pages=1, direct_only=False, **kwargs) -> list[dict]:
     all_listings = []
@@ -157,7 +184,6 @@ def search(min_price=None, max_price=None, min_area=None, max_area=None,
         # Próba 1: __NEXT_DATA__
         items = _try_next_data(html)
         if items:
-            from backend.scrapers.domiporta import normalize_listing  # istniejąca funkcja
             listings = [n for i in items if (n := normalize_listing(i))]
             logger.info("[Domiporta] __NEXT_DATA__: %d ofert", len(listings))
         else:

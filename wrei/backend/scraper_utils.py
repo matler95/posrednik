@@ -7,15 +7,20 @@ from urllib.parse import quote_plus
 from backend.http_client import fetch_html as _fetch_html_core
 from backend.rate_limiter import rate_limiter
 
+DEBUG_MODE = os.getenv("DEBUG", "false").lower() == "true"
 DEBUG_DIR = Path(os.getcwd()) / "debug_scrapers"
+
+if DEBUG_MODE:
+    logger.warning("[DEBUG] Scraper debug mode is ENABLED. HTML files will be saved to %s", DEBUG_DIR)
 
 def fetch_html(url: str, portal: str = "default", timeout: float = 20.0) -> str:
     rate_limiter.wait(portal)
     html = _fetch_html_core(url, timeout=timeout)
-    if html:
-        save_debug_html(url, portal, html)
-    else:
-        _save_debug(url, portal, b"[EMPTY RESPONSE]")
+    if DEBUG_MODE:
+        if html:
+            save_debug_html(url, portal, html)
+        else:
+            _save_debug(url, portal, b"[EMPTY RESPONSE]")
     return html
 
 def _save_debug(url: str, portal: str, content: bytes):

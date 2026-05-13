@@ -15,139 +15,166 @@ Dostępne zmienne w wyrażeniu:
 import logging
 import re
 
+import operator
+
 logger = logging.getLogger(__name__)
 
-# Dozwolone nazwy w wyrażeniu alert condition
-SAFE_NAMES = {
-    "score", "price", "price_per_m2", "area", "rooms", "district",
-    "direct_offer", "rcn_benchmark", "cagr_5y", "transaction_gap",
-    "text_score", "photo_score", "days_on_market", "portal", "condition",
-    "True", "False", "None", "and", "or", "not", "in",
+# Map operator strings to operator functions
+OPERATORS = {
+    "gt":  operator.gt,
+    "lt":  operator.lt,
+    "ge":  operator.ge,
+    "le":  operator.le,
+    "eq":  operator.eq,
+    "ne":  operator.ne,
+    "in":  lambda x, y: x in y if isinstance(y, (list, tuple, set, str)) else False,
+    "contains": lambda x, y: y in x if isinstance(x, (list, str)) else False,
 }
 
-# Niedozwolone wzorce (bezpieczeństwo)
-FORBIDDEN_PATTERNS = [
-    r"__", r"import", r"exec", r"eval", r"open", r"os\.", r"sys\.",
-    r"subprocess", r"socket", r"lambda", r"class ", r"def ",
-]
+def evaluate_condition(listing: dict, condition: dict | str) -> bool:
+    """
+    Safe evaluation of a condition. 
+    Supports structured dict format: {"field": {"op": value}, "and": [...]}
+    Or falls back to a very limited string parser for simple "field > value" cases.
+    """
+    if not condition:
+        return True
+    
+    # If it's a string, try to parse it as JSON first
+    if isinstance(condition, str):
+        import json
+        try:
+            condition = json.loads(condition)
+        except json.JSONDecodeError:
+            # Legacy string fallback - very limited safety!
+            # In production we should migrate all alerts to JSON.
+            logger.warning("[Evaluator] Legacy string condition detected: %s. Please migrate to JSON.", condition)
+            return _evaluate_legacy_string(listing, condition)
 
+    if not isinstance(condition, dict):
+        return False
 
-def is_safe_expression(expr: str) -> bool:
-    """Sprawdza czy wyrażenie zawiera tylko bezpieczne konstrukcje."""
-    for pat in FORBIDDEN_PATTERNS:
-        if re.search(pat, expr):
-            return False
+    # Logic for structured JSON
+    # Example: {"score": {"gt": 0.25}, "district": {"eq": "Mokotów"}}
+    for field, rule in condition.items():
+        if field == "and":
+            if not all(evaluate_condition(listing, r) for r in rule):
+                return False
+            continue
+        if field == "or":
+            if not any(evaluate_condition(listing, r) for r in rule):
+                return False
+            continue
+
+        val = listing.get(field)
+        if isinstance(rule, dict):
+            for op_name, threshold in rule.items():
+                op_func = OPERATORS.get(op_name)
+                if not op_func:
+                    logger.error("[Evaluator] Unknown operator: %s", op_name)
+                    return False
+                try:
+                    if not op_func(val, threshold):
+                        return False
+                except Exception as e:
+                    logger.debug("[Evaluator] Comparison error for %s %s %s: %s", val, op_name, threshold, e)
+                    return False
+        else:
+            # Default to equality
+            if val != rule:
+                return False
+                
     return True
 
-
-def evaluate_condition(listing: dict, condition_expr: str) -> bool:
+def _evaluate_legacy_string(listing: dict, expr: str) -> bool:
     """
-    Bezpieczna ocena wyrażenia warunkowego dla danej oferty.
-    Zwraca True jeśli warunek spełniony.
+    Extremely limited and safe string parser for legacy expressions.
+    Only supports 'field op value' joined by 'and'.
     """
-    if not condition_expr or not condition_expr.strip():
-        return True
-    if not is_safe_expression(condition_expr):
-        logger.warning("[Evaluator] Niebezpieczne wyrażenie: %s", condition_expr)
-        return False
-
-    # Spłaszcz wartości liczbowe z None → 0
-    context = {
-        "score":           float(listing.get("score") or 0),
-        "price":           int(listing.get("price") or 0),
-        "price_per_m2":    float(listing.get("price_per_m2") or 0),
-        "area":            float(listing.get("area") or 0),
-        "rooms":           str(listing.get("rooms") or ""),
-        "district":        str(listing.get("district") or ""),
-        "direct_offer":    bool(listing.get("direct_offer")),
-        "rcn_benchmark":   float(listing.get("rcn_benchmark") or 0),
-        "cagr_5y":         float(listing.get("cagr_5y") or 0),
-        "transaction_gap": float(listing.get("transaction_gap") or 0),
-        "text_score":      float(listing.get("text_score") or 0),
-        "photo_score":     float(listing.get("photo_score") or 0),
-        "days_on_market":  int(listing.get("days_on_market") or 0),
-        "portal":          str(listing.get("portal") or ""),
-        "condition":       str(listing.get("condition") or ""),
-        # builtins wyłączone
-        "__builtins__":    {},
-    }
-
-    try:
-        return bool(eval(condition_expr, {"__builtins__": {}}, context))  # noqa: S307
-    except Exception as exc:
-        logger.debug("[Evaluator] Błąd eval '%s': %s", condition_expr, exc)
-        return False
+    parts = [p.strip() for p in expr.split(" and ")]
+    for part in parts:
+        match = re.match(r"(\w+)\s*([><!=]=?)\s*(.*)", part)
+        if not match:
+            logger.warning("[Evaluator] Could not parse legacy part: %s", part)
+            return False
+        field, op, val_str = match.groups()
+        val_str = val_str.strip("'\" ")
+        
+        actual_val = listing.get(field)
+        try:
+            # Try to convert threshold to float if possible
+            threshold = float(val_str) if '.' in val_str or val_str.isdigit() else val_str
+        except ValueError:
+            threshold = val_str
+            
+        op_map = {">": operator.gt, "<": operator.lt, ">=": operator.ge, "<=": operator.le, "==": operator.eq, "!=": operator.ne}
+        op_func = op_map.get(op)
+        if not op_func: return False
+        
+        try:
+            if not op_func(actual_val, threshold): return False
+        except Exception: return False
+    return True
 
 
 def get_watchlist_alerts() -> list[dict]:
     """Pobiera aktywne alerty z DB."""
     from backend.db import get_conn
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT id, name, condition_expr, min_score, city_slug
-        FROM watchlist
-        WHERE active = TRUE
-        ORDER BY id
-    """)
-    cols = [d[0] for d in cur.description]
-    rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-    cur.close()
-    conn.close()
-    return rows
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, name, condition_expr, min_score, city_slug
+            FROM watchlist
+            WHERE active = TRUE
+            ORDER BY id
+        """)
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
 def get_recent_listings_for_alerts(hours: int = 1, limit: int = 200) -> list[dict]:
     """Zwraca oferty dodane w ostatnich N godzinach (świeże)."""
     from backend.db import get_conn
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT id, url, title, price, area, rooms, district, portal,
-               score, price_per_m2, direct_offer, condition, days_on_market,
-               rcn_benchmark, cagr_5y, transaction_gap, text_score, photo_score,
-               llm_analysis, images
-        FROM listings
-        WHERE created_at >= NOW() - INTERVAL '%s hours'
-          AND score IS NOT NULL
-        ORDER BY score DESC
-        LIMIT %s
-    """, (hours, limit))
-    cols = [d[0] for d in cur.description]
-    rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-    cur.close()
-    conn.close()
-    return rows
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, url, title, price, area, rooms, district, portal,
+                   score, price_per_m2, direct_offer, condition, days_on_market,
+                   rcn_benchmark, cagr_5y, transaction_gap, text_score, photo_score,
+                   llm_analysis, images
+            FROM listings
+            WHERE created_at >= NOW() - INTERVAL '%s hours'
+              AND score IS NOT NULL
+            ORDER BY score DESC
+            LIMIT %s
+        """, (hours, limit))
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
 def mark_alert_sent(listing_id: int, watchlist_id: int) -> None:
     """Zapisuje że alert został wysłany (żeby nie wysyłać dwa razy)."""
     from backend.db import get_conn
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO alert_sent_log (listing_id, watchlist_id)
-        VALUES (%s, %s)
-        ON CONFLICT DO NOTHING
-    """, (listing_id, watchlist_id))
-    conn.commit()
-    cur.close()
-    conn.close()
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO alert_sent_log (listing_id, watchlist_id)
+            VALUES (%s, %s)
+            ON CONFLICT DO NOTHING
+        """, (listing_id, watchlist_id))
+        conn.commit()
 
 
 def was_alert_sent(listing_id: int, watchlist_id: int) -> bool:
     """Sprawdza czy dla tej pary (listing, watchlist) alert już był wysłany."""
     from backend.db import get_conn
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT 1 FROM alert_sent_log
-        WHERE listing_id = %s AND watchlist_id = %s
-    """, (listing_id, watchlist_id))
-    exists = cur.fetchone() is not None
-    cur.close()
-    conn.close()
-    return exists
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT 1 FROM alert_sent_log
+            WHERE listing_id = %s AND watchlist_id = %s
+        """, (listing_id, watchlist_id))
+        return cur.fetchone() is not None
 
 
 def run_alert_check():

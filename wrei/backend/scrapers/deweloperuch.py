@@ -45,6 +45,17 @@ def _strip_accents(text: str) -> str:
         if unicodedata.category(c) != "Mn"
     ).lower()
 
+def _extract_teryt_from_record(record: dict) -> str | None:
+    """Próbuje wyciągnąć 6-cyfrowy kod TERYT z różnych pól rekordu."""
+    # Szukamy wzorca 1465XX (Warszawa)
+    for key in ("name", "symbol", "external_id", "street"):
+        val = record.get(key)
+        if val and isinstance(val, str):
+            match = re.search(r"1465(\d{2})", val)
+            if match:
+                return "1465" + match.group(1)
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Regex geocoding — rozszerzone wzorce dla Warszawy (~85% pokrycia)
@@ -280,11 +291,11 @@ def _normalize(record: dict, city_slug: str) -> dict:
     # Próbuj kilka źródeł tekstu dla lepszego geocodingu
     district = None
     
-    # 1. TERYT code from name (e.g. 146505_...) - 100% precision for Warsaw
-    rec_name = record.get("name") or ""
-    if city_slug == "warszawa" and rec_name.startswith("1465"):
-        teryt = rec_name[:6]
-        district = WARSAW_TERYT_MAP.get(teryt)
+    # 1. TERYT code detection (100% precision for Warsaw)
+    if city_slug == "warszawa":
+        teryt = _extract_teryt_from_record(record)
+        if teryt:
+            district = WARSAW_TERYT_MAP.get(teryt)
 
     # 2. Regex fallback
     if not district:
@@ -324,14 +335,14 @@ def iter_transactions(
     date_to: str | None = None,
     max_pages: int | None = None,
     rooms: int | None = None,
+    start_page: int = 1,
 ) -> Generator[dict, None, None]:
     """
     Generator zwracający transakcje z API Deweloperuch.
-    district wypełniany przez regex (instant).
-    Nominatim używany tylko dla pozostałych w tle.
+    start_page pozwala na wznowienie od konkretnej strony.
     """
     with httpx.Client(headers=DEFAULT_HEADERS) as client:
-        page = 1
+        page = start_page
         total_pages = None
         total_records = 0
         total_with_district = 0

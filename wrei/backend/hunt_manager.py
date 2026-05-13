@@ -29,6 +29,11 @@ class HuntJobManager:
             self._redis_pool = await create_pool(RedisSettings(host=REDIS_HOST))
         return self._redis_pool
 
+    async def close(self):
+        if self._redis_pool:
+            await self._redis_pool.close()
+            self._redis_pool = None
+
     async def start_job(self, config: dict):
         job_id = str(uuid.uuid4())
         redis = await self._get_redis()
@@ -51,33 +56,43 @@ hunt_manager = HuntJobManager()
 
 async def stream_job_events(job_id: str) -> AsyncGenerator[str, None]:
     """Streams job events from Redis Pub/Sub."""
-    redis_conn = await create_pool(RedisSettings(host=REDIS_HOST))
-    pubsub = redis_conn.pubsub()
-    channel_name = f"hunt_events:{job_id}"
-    
-    await pubsub.subscribe(channel_name)
-    logger.info("[SSE] Subscribed to %s", channel_name)
-    
+    # Reuse pool settings for lightweight connection
+    settings = RedisSettings(host=REDIS_HOST)
+    redis_conn = await create_pool(settings)
     try:
+        pubsub = redis_conn.pubsub()
+        channel_name = f"hunt_events:{job_id}"
+        
+        await pubsub.subscribe(channel_name)
+        logger.info("[SSE] Subscribed to %s", channel_name)
+        
         # First, send current status from DB
-        job_db = get_hunt_job(job_id)
-        if job_db:
-            yield f"data: {json.dumps({'type': 'status', 'status': job_db['status'], 'message': 'Połączono z sesją.'})}\n\n"
+        try:
+            job_db = await asyncio.to_thread(get_hunt_job, job_id)
+            if job_db:
+                yield f"data: {json.dumps({'type': 'status', 'status': job_db['status'], 'message': 'Połączono z sesją.'})}\n\n"
+        except Exception as e:
+            logger.warning("[SSE] Could not fetch initial status: %s", e)
 
         while True:
-            message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=30.0)
-            if message:
-                data = message['data']
-                yield f"data: {data.decode('utf-8') if isinstance(data, bytes) else data}\n\n"
-                
-                # Check for termination
-                try:
-                    event = json.loads(data)
-                    if event.get("type") in ("done", "error"):
-                        break
-                except: pass
-            else:
-                yield 'data: {"type":"heartbeat"}\n\n'
+            try:
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=30.0)
+                if message:
+                    data = message['data']
+                    yield f"data: {data.decode('utf-8') if isinstance(data, bytes) else data}\n\n"
+                    
+                    # Check for termination
+                    try:
+                        event = json.loads(data)
+                        if event.get("type") in ("done", "error"):
+                            break
+                    except: pass
+                else:
+                    yield 'data: {"type":"heartbeat"}\n\n'
+            except Exception as e:
+                logger.error("[SSE] Stream error for %s: %s", job_id, e)
+                break
     finally:
-        await pubsub.unsubscribe(channel_name)
+        logger.info("[SSE] Unsubscribing from %s", job_id)
+        # No need for explicit unsubscribe if we close the connection
         await redis_conn.close()

@@ -175,5 +175,7 @@ async def process_photo_queue(batch_size: int = 3):
         try:
             analysis = await analyze_listing_photos(listing_id, urls)
             save_photo_analysis(listing_id, analysis)
+            from backend.analysis import recalculate_listing_score_in_db
+            recalculate_listing_score_in_db(listing_id)
         except Exception:
             logger.exception("[Vision] Błąd dla listing %d", listing_id)

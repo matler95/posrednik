@@ -16,6 +16,32 @@ from tenacity import (
 
 logger = logging.getLogger(__name__)
 
+# SSRF Protection: Allowed domains for fetching
+ALLOWED_DOMAINS = {
+    "otodom.pl", "olx.pl", "domiporta.pl", "gratka.pl", "morizon.pl",
+    "nieruchomosci-online.pl", "deweloperuch.pl", "google.com",
+    "nominatim.openstreetmap.org", "openstreetmap.org",
+    "olxcdn.com", "otostatic.pl", "domiportastatic.pl", "huggingface.co"
+}
+
+def is_allowed_url(url: str) -> bool:
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(url)
+        if not parsed.netloc:
+            return False
+        domain = parsed.netloc.lower()
+        if ":" in domain:
+            domain = domain.split(":")[0]
+        
+        # Check if domain or any parent domain is in ALLOWED_DOMAINS
+        for allowed in ALLOWED_DOMAINS:
+            if domain == allowed or domain.endswith("." + allowed):
+                return True
+        return False
+    except Exception:
+        return False
+
 # ---------------------------------------------------------------------------
 # User-Agent rotation
 # ---------------------------------------------------------------------------
@@ -96,6 +122,10 @@ def fetch_html(
     Pobiera HTML synchronicznie z retry, rotacją UA i opcjonalnym proxy.
     Drop-in replacement dla starego fetch_html z scraper_utils.
     """
+    if not is_allowed_url(url):
+        logger.error("[HTTP] SSRF Blocked: Nieautoryzowana domena dla %s", url)
+        return ""
+
     proxy = random.choice(proxies) if proxies else None
     headers = random_headers(extra_headers)
 
@@ -150,6 +180,10 @@ async def fetch_html_async(
     """
     Asynchroniczna wersja — używać z istniejącym httpx.AsyncClient dla connection pooling.
     """
+    if not is_allowed_url(url):
+        logger.error("[HTTP async] SSRF Blocked: %s", url)
+        return ""
+
     for attempt in range(1, attempts + 1):
         headers = random_headers(extra_headers)
         try:
@@ -186,6 +220,10 @@ async def fetch_json_async(
     """
     Async fetch z parsowaniem JSON — dla API (nieruchomosci_online).
     """
+    if not is_allowed_url(url):
+        logger.error("[HTTP async JSON] SSRF Blocked: %s", url)
+        return None
+
     headers = random_headers({"Accept": "application/json", **(extra_headers or {})})
 
     for attempt in range(1, attempts + 1):
@@ -219,6 +257,10 @@ def fetch_html_with_session(
     Pobiera HTML z preflightem — najpierw odwiedza homepage żeby zdobyć cookies,
     potem pobiera właściwy URL z tą samą sesją. Używać dla portali z 403.
     """
+    if not is_allowed_url(url) or not is_allowed_url(homepage_url):
+        logger.error("[HTTP session] SSRF Blocked: %s", url)
+        return ""
+
     from backend.rate_limiter import rate_limiter
 
     headers = random_headers({

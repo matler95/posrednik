@@ -23,6 +23,7 @@ Example: {{"condition": "dobry", "investment_score": 8, "summary": "Mieszkanie b
 Data:
 Title: {title} | District: {district}
 Price: {price} PLN | Area: {area} m2 | Rooms: {rooms} | Price/m2: {price_per_m2}
+Floor: {floor_info} | Year: {year_built} | Condition Hint: {condition_hint}
 RCN Benchmark: {rcn_benchmark} | CAGR 5y: {cagr_pct}% | Gap: {transaction_gap_pct}% ({transaction_gap_sign})
 Desc: {description}"""
 
@@ -71,6 +72,10 @@ async def analyze_listing_with_llm(listing: dict) -> dict | None:
                 "messages": [{"role": "user", "content": prompt}],
                 "stream": False,
                 "format": "json",
+                "options": {
+                    "temperature": 0.0,
+                    "num_predict": 512,
+                }
             })
     except httpx.ConnectError:
         logger.error("[LLM] Nie można połączyć z Ollama na %s", OLLAMA_URL)
@@ -86,7 +91,11 @@ async def analyze_listing_with_llm(listing: dict) -> dict | None:
         logger.error("[LLM] Ollama status %d", response.status_code)
         return None
 
-    content = response.json().get("message", {}).get("content", "{}")
+    try:
+        content = response.json().get("message", {}).get("content", "{}")
+    except Exception as e:
+        logger.error("[LLM] Błąd parsowania odpowiedzi Ollama: %s", e)
+        return None
 
     # Cleanup markdown fence jeśli model dodał
     content = content.strip()
@@ -123,6 +132,8 @@ async def analyze_listing_with_llm(listing: dict) -> dict | None:
         return None
 
 
+LLM_MAX_CONCURRENCY = int(os.getenv("LLM_MAX_CONCURRENCY", "3"))
+
 async def run_llm_queue_once(batch_size: int = LLM_BATCH_SIZE) -> int:
     """
     Przetwarza jeden batch ofert z kolejki LLM.
@@ -134,10 +145,10 @@ async def run_llm_queue_once(batch_size: int = LLM_BATCH_SIZE) -> int:
     if not listings:
         return 0
 
-    logger.info("[LLM Queue] Analizuję batch %d ofert...", len(listings))
+    logger.info("[LLM Queue] Analizuję batch %d ofert (concurrency=%d)...", len(listings), LLM_MAX_CONCURRENCY)
     
-    # Przetwarzaj w małych batchach równolegle (np. 3 naraz)
-    semaphore = asyncio.Semaphore(3)
+    # Przetwarzaj w małych batchach równolegle
+    semaphore = asyncio.Semaphore(LLM_MAX_CONCURRENCY)
 
     async def _analyze_and_save(listing):
         async with semaphore:
@@ -145,6 +156,8 @@ async def run_llm_queue_once(batch_size: int = LLM_BATCH_SIZE) -> int:
                 analysis = await analyze_listing_with_llm(listing)
                 if analysis and "error" not in analysis:
                     save_llm_analysis(listing["url"], analysis)
+                    from backend.analysis import recalculate_listing_score_in_db
+                    recalculate_listing_score_in_db(listing["id"])
                     logger.debug("[LLM Queue] ✓ listing %d: score=%s",
                                  listing.get("id"), analysis.get("investment_score"))
                     return True

@@ -153,19 +153,32 @@ async def send_daily_digest_task(ctx):
 
 async def import_rcn_history_task(ctx, city_slug: str, years: int):
     from backend.scrapers.deweloperuch import iter_transactions
-    from backend.db import save_transaction_prices
+    from backend.db import save_transaction_prices, get_checkpoint, save_checkpoint
     from datetime import date, timedelta
     
+    job_key = f"rcn_history:{city_slug}:{years}y"
+    checkpoint = get_checkpoint(job_key) or {}
+    start_page = checkpoint.get("last_page", 1)
+    
     date_from = (date.today() - timedelta(days=years * 365)).isoformat()
-    logger.info("[Worker] Rozpoczynam pobieranie historii RCN (%d lat) dla %s", years, city_slug)
+    logger.info("[Worker] Rozpoczynam/Wznawiam pobieranie historii RCN (%d lat) dla %s od strony %d", 
+                years, city_slug, start_page)
     
     batch = []
-    total_saved = 0
-    for tx in iter_transactions(city_slug, date_from=date_from):
+    total_saved = checkpoint.get("total_saved", 0)
+    current_page = start_page
+    
+    # Przechodzimy przez transakcje od start_page
+    # iter_transactions musi wspierać start_page
+    for tx in iter_transactions(city_slug, date_from=date_from, start_page=start_page):
         batch.append(tx)
         if len(batch) >= 500:
             saved = save_transaction_prices(batch)
             total_saved += saved
+            # Aproksymacja strony (zakładając PER_PAGE=50)
+            current_page = start_page + (total_saved // 50)
+            save_checkpoint(job_key, {"last_page": current_page, "total_saved": total_saved})
+            
             batch = []
             await asyncio.sleep(0.5) # Throttle
     
@@ -173,6 +186,8 @@ async def import_rcn_history_task(ctx, city_slug: str, years: int):
         saved = save_transaction_prices(batch)
         total_saved += saved
     
+    # Zakończone — wyczyść checkpoint lub oznacz jako done
+    save_checkpoint(job_key, {"last_page": current_page, "total_saved": total_saved, "status": "completed"})
     logger.info("[Worker] Zakończono import historii RCN: %d rekordów.", total_saved)
 
 async def startup(ctx):

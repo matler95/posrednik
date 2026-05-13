@@ -15,14 +15,9 @@ Harmonogram:
 """
 import asyncio
 import logging
-from apscheduler.schedulers.background import BackgroundScheduler
-
-from backend.db import init_db, record_scrape_run, save_listings
-from backend.scraper import search
+from backend.db import record_scrape_run, save_listings, get_conn
 
 logger = logging.getLogger(__name__)
-
-scheduler = BackgroundScheduler(daemon=True)
 
 # ─────────────────────────────────────────────
 # 1. Scrapowanie portali
@@ -84,23 +79,22 @@ def update_rcn_data(city_slugs: list[str] | None = None, days: int = 30):
     update_market_stats()
 
 
-
-# backend/scheduler.py — zmień initial_rcn_load
 def initial_rcn_load(city_slugs=None, years=5):
     """
     Strategia:
     - Pierwsza sesja: pobierz ostatnie 90 dni (szybko, ~10 stron)
-    - Background: dogłębne pobieranie historii w tle (bez blokowania)
+    - Historia: dogłębne pobieranie historii w tle
     """
     import os
-    from backend.scrapers.deweloperuch import fetch_recent, fetch_historical
-    from backend.db import save_transaction_prices, get_conn
+    from backend.scrapers.deweloperuch import fetch_recent
+    from backend.db import save_transaction_prices
 
     cities = city_slugs or [c.strip() for c in os.getenv("TARGET_CITIES", "warszawa").split(",")]
-    conn = get_conn(); cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM transaction_prices")
-    count = cur.fetchone()[0]
-    cur.close(); conn.close()
+    
+    with get_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM transaction_prices")
+        count = cur.fetchone()[0]
 
     if count > 1000:
         logger.info("[RCN] Baza zawiera %d rekordów — pomijam initial load", count)
@@ -116,14 +110,7 @@ def initial_rcn_load(city_slugs=None, years=5):
         except Exception:
             logger.exception("[RCN] Fast-start error dla: %s", city)
 
-    # Background: historia 5 lat w tle (nie blokuje startu)
-    scheduler.add_job(
-        _background_historical_load,
-        "date",
-        id="bg_historical_rcn",
-        replace_existing=True,
-        kwargs={"cities": cities, "years": years}
-    )
+    _background_historical_load(cities, years=years)
 
 def _background_historical_load(cities, years=5):
     """Pobieranie historii w tle — uruchamiane po fast-start."""
@@ -189,7 +176,6 @@ def geocode_pending():
 # 4. Kolejka LLM (Ollama text)
 # ─────────────────────────────────────────────
 
-# backend/scheduler.py — zastąp process_llm_queue_sync
 def process_llm_queue_sync():
     """Wrapper synchroniczny — tworzy nowy event loop zamiast asyncio.run()."""
     import asyncio
@@ -267,88 +253,3 @@ def send_daily_digest():
         logger.debug("[Digest] Moduł alerts.channels niedostępny (Faza 5)")
     except Exception:
         logger.exception("[Digest] Błąd wysyłania digestu")
-
-
-# ─────────────────────────────────────────────
-# Start / Stop
-# ─────────────────────────────────────────────
-
-def start_scheduler():
-    init_db()
-
-    # ── Scrapowanie portali ──────────────────
-    scheduler.add_job(
-        crawl_all_sources, "cron",
-        hour="6,12,18", minute=0,
-        id="crawl_all_portals", replace_existing=True,
-    )
-
-    # ── Dane RCN (Deweloperuch) ─────────────
-    scheduler.add_job(
-        update_rcn_data, "cron",
-        hour=4, minute=0,
-        id="rcn_update", replace_existing=True,
-    )
-    scheduler.add_job(
-        geocode_pending, "interval",
-        hours=2,
-        id="geocode_pending", replace_existing=True,
-    )
-
-    # ── Kolejka LLM ─────────────────────────
-    scheduler.add_job(
-        process_llm_queue_sync, "interval",
-        minutes=10,
-        id="llm_queue", replace_existing=True,
-    )
-
-    # ── Kolejka photo ────────────────────────
-    scheduler.add_job(
-        process_photo_queue, "interval",
-        minutes=15,
-        id="photo_queue", replace_existing=True,
-    )
-
-    # ── Market stats (co noc o 3:00) ─────────
-    scheduler.add_job(
-        update_market_stats, "cron",
-        hour=3, minute=0,
-        id="stats_update", replace_existing=True,
-    )
-
-    # ── ML retrain (co niedzielę o 2:00) ────
-    scheduler.add_job(
-        retrain_ml, "cron",
-        day_of_week="sun", hour=2, minute=0,
-        id="ml_retrain", replace_existing=True,
-    )
-
-    # ── Alerty co 15 min ────────────────────
-    scheduler.add_job(
-        check_alerts, "interval",
-        minutes=15,
-        id="alert_check", replace_existing=True,
-    )
-
-    # ── Dzienny digest o 8:00 ───────────────
-    scheduler.add_job(
-        send_daily_digest, "cron",
-        hour=8, minute=0,
-        id="daily_digest", replace_existing=True,
-    )
-
-    scheduler.start()
-    logger.info("[Scheduler] Uruchomiony z %d zadaniami.", len(scheduler.get_jobs()))
-
-    # Załaduj dane RCN jeśli baza pusta (w tle po 10s od startu)
-    scheduler.add_job(
-        initial_rcn_load, "date",
-        run_date=None,  # od razu
-        id="initial_rcn_load", replace_existing=True,
-    )
-
-
-def stop_scheduler():
-    if scheduler.running:
-        scheduler.shutdown()
-        logger.info("[Scheduler] Zatrzymany.")

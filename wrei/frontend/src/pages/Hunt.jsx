@@ -283,12 +283,9 @@ function ListingCard({ listing, aiUpdates }) {
         transition: 'border-color 0.3s',
       }}
     >
-      <div style={{ display: 'flex' }}>
+      <div className="listing-card-body">
         {/* Thumbnail */}
-        <div style={{
-          width: 190, flexShrink: 0, background: 'var(--bg3)',
-          position: 'relative', minHeight: 150,
-        }}>
+        <div className="listing-thumbnail-container" style={{ background: 'var(--bg3)' }}>
           {img ? (
             <img
               src={img} alt={title}
