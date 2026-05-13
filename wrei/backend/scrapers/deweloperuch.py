@@ -210,6 +210,7 @@ def _fetch_page(
     date_from: str | None = None,
     date_to: str | None = None,
     rooms: int | None = None,
+    last_transaction_date: str | None = None,
 ) -> dict:
     """Pobiera jedną stronę z API Deweloperuch z retry (exponential backoff)."""
     params: dict = {
@@ -224,6 +225,8 @@ def _fetch_page(
         params["filterDateFrom"] = date_from
     if date_to:
         params["filterDateTo"] = date_to
+    if last_transaction_date:
+        params["filterLastTransactionDate"] = last_transaction_date
     if rooms:
         params["filterRooms"] = rooms
 
@@ -336,6 +339,7 @@ def iter_transactions(
     max_pages: int | None = None,
     rooms: int | None = None,
     start_page: int = 1,
+    last_transaction_date: str | None = None,
 ) -> Generator[dict, None, None]:
     """
     Generator zwracający transakcje z API Deweloperuch.
@@ -351,7 +355,7 @@ def iter_transactions(
             if max_pages and page > max_pages:
                 break
 
-            data = _fetch_page(client, city_slug, page, date_from, date_to, rooms)
+            data = _fetch_page(client, city_slug, page, date_from, date_to, rooms, last_transaction_date)
             if not data or "data" not in data:
                 if page == 1:
                     logger.error("[Deweloperuch] Brak danych na stronie 1 — sprawdź API")

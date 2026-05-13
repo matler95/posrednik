@@ -41,3 +41,7 @@ wrei/debug_scrapers/olx_1778615723_https___www_olx_pl_nieruchomosci_mieszkania_s
 wrei/debug_scrapers/otodom_1778615719_https___www_otodom_pl_pl_wyniki_sprzedaz_mieszkanie_mazowieckie_warszawa_warszaw.html
 wrei/debug_scrapers/otodom_1778615777_https___www_otodom_pl_pl_wyniki_sprzedaz_mieszkanie_mazowieckie_warszawa_warszaw.html
 wrei/scratch/test_scrapers.py
+wrei/backend/diag_rcn.py
+wrei/backend/alerts/__pycache__/evaluator.cpython-312.pyc
+wrei/backend/alerts/__pycache__/evaluator.cpython-312.pyc
+wrei/backend/alerts/__pycache__/evaluator.cpython-312.pyc
