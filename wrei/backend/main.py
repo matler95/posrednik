@@ -3,6 +3,8 @@ WREI Backend — FastAPI application.
 Modularized version v3.0.
 """
 import os
+import asyncio
+import logging
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
@@ -35,11 +37,11 @@ async def verify_api_key(api_key: str = Depends(api_key_header)):
         )
 
 # Register Routers
-app.include_router(listings.router)
-app.include_router(hunt.router, dependencies=[Depends(verify_api_key)])
-app.include_router(market.router, dependencies=[Depends(verify_api_key)])
-app.include_router(alerts.router, dependencies=[Depends(verify_api_key)])
-app.include_router(system.router, dependencies=[Depends(verify_api_key)])
+app.include_router(listings.router, prefix="/listings", tags=["listings"], dependencies=[Depends(verify_api_key)])
+app.include_router(hunt.router, prefix="/hunt", tags=["hunt"], dependencies=[Depends(verify_api_key)])
+app.include_router(market.router, prefix="/market", tags=["market"], dependencies=[Depends(verify_api_key)])
+app.include_router(alerts.router, prefix="/alerts", tags=["alerts"], dependencies=[Depends(verify_api_key)])
+app.include_router(system.router, prefix="/system", tags=["system"], dependencies=[Depends(verify_api_key)])
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -69,24 +71,30 @@ async def startup():
     except Exception as e:
         logger.warning("[Startup] Market stats check error: %s", e)
 
-    # 2. RCN Auto-ingest
+    # 2. RCN Auto-ingest (Robust Initial Load)
     try:
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+        
         with get_conn() as conn:
             cur = conn.cursor()
             cur.execute("SELECT COUNT(*) FROM transaction_prices")
             rcn_count = cur.fetchone()[0]
         
-        if rcn_count < 100:
-            logger.info("[Startup] Mało danych RCN (%d). Pobieram ostatnie 90 dni...", rcn_count)
-            from backend.scrapers.deweloperuch import fetch_recent
-            from backend.db import save_transaction_prices
-            
-            def _rcn_task():
-                data = fetch_recent("warszawa", days=90)
-                save_transaction_prices(data)
-                logger.info("[Startup RCN] Pobrano %d transakcji.", len(data))
-                
-            asyncio.create_task(asyncio.to_thread(_rcn_task))
+        async def _queue_tasks():
+            redis = await create_pool(RedisSettings(host=REDIS_HOST))
+            # If almost empty, get 7 years (back to Q1 2019)
+            if rcn_count < 10000:
+                logger.info("[Startup] Baza RCN jest pusta lub mała (%d). Kolejkuję 7 lat historii (od 2019)...", rcn_count)
+                await redis.enqueue_job('import_rcn_history_task', "warszawa", 7)
+            else:
+                # Regular catch-up (last 30 days)
+                logger.info("[Startup] Catch-up RCN (ostatnie 30 dni)...")
+                await redis.enqueue_job('import_rcn_history_task', "warszawa", 0.08) # ~30 days
+            await redis.close()
+
+        asyncio.create_task(_queue_tasks())
             
     except Exception as e:
         logger.warning("[Startup] RCN ingest error: %s", e)

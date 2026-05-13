@@ -1,4 +1,5 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Body
+from backend.api.schemas import HuntConfigSchema
 from fastapi.responses import StreamingResponse
 from backend.db import (
     get_hunt_config, get_hunt_listings, get_hunt_job, 
@@ -17,9 +18,15 @@ def _serialize(obj: dict) -> dict:
     return out
 
 @router.post("/hunt/start")
-async def hunt_start(body: dict):
+async def hunt_start(body: dict = Body(...)):
     from backend.hunt_manager import hunt_manager
-    config = body.get("config") or get_hunt_config()
+    # Manually validate config or use schema if provided
+    config_data = body.get("config")
+    if config_data:
+        config = HuntConfigSchema(**config_data).dict()
+    else:
+        config = get_hunt_config()
+    
     if body.get("save", True):
         save_hunt_config(config)
     job = await hunt_manager.start_job(config)
@@ -150,8 +157,8 @@ async def get_config():
     return cfg
 
 @router.post("/set-hunt-config")
-async def set_config(config: dict):
-    save_hunt_config(config)
+async def set_config(config: HuntConfigSchema):
+    save_hunt_config(config.dict())
     return {"status": "saved"}
 
 # Legacy

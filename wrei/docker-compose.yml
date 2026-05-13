@@ -29,6 +29,7 @@ services:
       - wrei_photos:/app/photos
     environment:
       POSTGRES_DB: wrei
+      WREI_API_KEY: "secret-key-123"
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_HOST: db
@@ -55,6 +56,7 @@ services:
       - wrei_photos:/app/photos
     environment:
       POSTGRES_DB: wrei
+      WREI_API_KEY: "secret-key-123"
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_HOST: db
@@ -71,9 +73,6 @@ services:
   frontend:
     build:
       context: ./frontend
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
     environment:
       - VITE_API_URL=/api
     depends_on:

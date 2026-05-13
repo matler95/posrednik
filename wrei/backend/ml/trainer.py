@@ -18,37 +18,45 @@ logger = logging.getLogger(__name__)
 MODELS_DIR = Path("backend/models")
 
 def get_training_data():
+    """
+    Pobiera dane do treningu modelu. 
+    Priorytetyzuje realne transakcje (RCN) nad cenami ofertowymi.
+    """
     conn = get_conn()
     cur = conn.cursor()
-    # Pobieramy z historii dla szerszego kontekstu
+    
+    # 1. Realne transakcje z RCN (Złoty standard ceny)
+    cur.execute("""
+        SELECT 
+            amount as price, size as area, rooms_number as rooms, floor_number as floor,
+            'blok' as building_type, 'do remontu' as condition,
+            district, year as year_built,
+            1.0 as score
+        FROM transaction_prices
+        WHERE amount > 0 AND size > 0 AND city_slug = 'warszawa'
+    """)
+    cols = [d[0] for d in cur.description]
+    rcn_rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+    
+    # 2. Ceny ofertowe (tylko te o wysokim score, czyli "realistyczne")
     cur.execute("""
         SELECT 
             price, area, rooms, floor, building_type, condition,
             district, year_built,
             score
-        FROM listing_history
-        WHERE price > 0 AND area > 0
+        FROM listings
+        WHERE price > 0 AND area > 0 AND score > 0.15 AND city_slug = 'warszawa'
     """)
     cols = [d[0] for d in cur.description]
-    rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+    asking_rows = [dict(zip(cols, row)) for row in cur.fetchall()]
     
-    # Jesli nie ma wystarczajaco w historii, bierzemy z main table
-    if len(rows) < 100:
-        cur.execute("""
-            SELECT 
-                price, area, rooms, floor, building_type, condition,
-                district, year_built, total_floors, features, ownership,
-                score
-            FROM listings
-            WHERE price > 0 AND area > 0
-        """)
-        cols = [d[0] for d in cur.description]
-        main_rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-        rows.extend(main_rows)
-        
     cur.close()
     conn.close()
-    return rows
+    
+    total_data = rcn_rows + asking_rows
+    logger.info("[ML] Pobrano %d próbek (RCN: %d, Oferty: %d)", 
+                len(total_data), len(rcn_rows), len(asking_rows))
+    return total_data
 
 def train_model():
     MODELS_DIR.mkdir(parents=True, exist_ok=True)

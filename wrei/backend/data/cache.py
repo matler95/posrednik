@@ -1,3 +1,4 @@
+import logging
 from psycopg2.extras import Json
 from backend.data.connection import get_conn
 

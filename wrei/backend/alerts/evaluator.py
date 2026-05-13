@@ -123,7 +123,7 @@ def get_watchlist_alerts() -> list[dict]:
     with get_conn() as conn:
         cur = conn.cursor()
         cur.execute("""
-            SELECT id, name, condition_expr, min_score, city_slug
+            SELECT id, name, condition_expr, condition_json, min_score, city_slug
             FROM watchlist
             WHERE active = TRUE
             ORDER BY id
@@ -203,8 +203,9 @@ def run_alert_check():
             # Filtr miasto
             if alert.get("city_slug") and listing.get("city_slug") != alert["city_slug"]:
                 continue
-            # Sprawdź warunek
-            if not evaluate_condition(listing, alert.get("condition_expr") or ""):
+            # Sprawdź warunek (preferuj JSON)
+            condition = alert.get("condition_json") or alert.get("condition_expr") or ""
+            if not evaluate_condition(listing, condition):
                 continue
             # Sprawdź czy już wysłano
             if was_alert_sent(listing["id"], alert["id"]):

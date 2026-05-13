@@ -89,22 +89,24 @@ async def rcn_benchmark(
     from backend.market.trend_analyzer import get_rcn_benchmark
     return {"benchmark_sqm": get_rcn_benchmark(city_slug, district=district, rooms=rooms)}
 
+from backend.api.schemas import MarketStatsRequestSchema
+
 @router.post("/ingest")
-async def market_ingest(city_slug: str = Query("warszawa"), days: int = Query(30)):
+async def market_ingest(city_slug: str = "warszawa", days: int = 30):
     from arq import create_pool
     from arq.connections import RedisSettings
     import os
 
     REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
     redis = await create_pool(RedisSettings(host=REDIS_HOST))
-    # We use years=0 as a flag for recent ingest if we want, or just pass a small float
+    # We use years=0 as a flag for recent ingest
     await redis.enqueue_job('import_rcn_history_task', city_slug, round(days/365, 3))
     await redis.close()
     
     return {"status": "queued", "city_slug": city_slug, "days": days}
 
 @router.post("/ingest-history")
-async def market_ingest_history(city_slug: str = Query("warszawa"), years: int = Query(5)):
+async def market_ingest_history(city_slug: str = "warszawa", years: int = 5):
     from arq import create_pool
     from arq.connections import RedisSettings
     import os
@@ -115,6 +117,13 @@ async def market_ingest_history(city_slug: str = Query("warszawa"), years: int =
     await redis.close()
     
     return {"status": "queued", "city_slug": city_slug, "years": years}
+
+@router.post("/generate-stats")
+async def market_generate_stats(req: MarketStatsRequestSchema):
+    from backend.db import generate_market_stats
+    # In production this should be a background task
+    asyncio.create_task(asyncio.to_thread(generate_market_stats))
+    return {"status": "started", "city_slug": req.city_slug}
 
 @router.get("/rcn-stats")
 async def rcn_stats(city_slug: str = Query("warszawa")):

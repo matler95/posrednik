@@ -19,9 +19,9 @@ COPY backend/migrations ./backend/migrations
 COPY backend ./backend
 
 # Folder na pobrane zdjęcia (Faza 4)
-RUN mkdir -p /app/photos
+RUN mkdir -p /app/photos /app/debug_scrapers
 
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

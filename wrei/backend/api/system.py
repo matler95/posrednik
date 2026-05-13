@@ -35,15 +35,18 @@ async def health_check():
     except Exception as e:
         status["components"]["ollama"] = f"unreachable: {str(e)}"
         
-    # 3. Scheduler check
+    # 3. Redis (ARQ) check
     try:
-        from backend.scheduler import scheduler
-        if scheduler and scheduler.running:
-            status["components"]["scheduler"] = "running"
-        else:
-            status["components"]["scheduler"] = "stopped"
-    except Exception:
-        status["components"]["scheduler"] = "unknown"
+        import os
+        from arq import create_pool
+        from arq.connections import RedisSettings
+        REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+        redis = await create_pool(RedisSettings(host=REDIS_HOST))
+        await redis.ping()
+        await redis.close()
+        status["components"]["redis"] = "ok"
+    except Exception as e:
+        status["components"]["redis"] = f"error: {str(e)}"
 
     return status
 
