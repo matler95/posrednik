@@ -18,6 +18,7 @@ LLM_TIMEOUT = 45.0
 
 PROMPT_TEMPLATE = """\
 Analyze the listing and return ONLY a JSON object (no text before/after).
+OUTPUT MUST BE STRICTLY IN POLISH LANGUAGE.
 Example: {{"condition": "dobry", "investment_score": 8, "summary": "Mieszkanie blisko metra, dobra cena..."}}
 
 Data:
@@ -25,7 +26,9 @@ Title: {title} | District: {district}
 Price: {price} PLN | Area: {area} m2 | Rooms: {rooms} | Price/m2: {price_per_m2}
 Floor: {floor_info} | Year: {year_built} | Condition Hint: {condition_hint}
 RCN Benchmark: {rcn_benchmark} | CAGR 5y: {cagr_pct}% | Gap: {transaction_gap_pct}% ({transaction_gap_sign})
-Desc: {description}"""
+<description>
+{description}
+</description>"""
 
 
 def _build_prompt(listing: dict) -> str:

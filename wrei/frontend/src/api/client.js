@@ -1,8 +1,16 @@
 import axios from 'axios';
 
 const BASE = import.meta.env.VITE_API_URL || '/api';
+const API_KEY = import.meta.env.VITE_API_KEY || '';
 
 const client = axios.create({ baseURL: BASE });
+
+if (API_KEY) {
+  client.interceptors.request.use((config) => {
+    config.headers['X-API-Key'] = API_KEY;
+    return config;
+  });
+}
 
 export const huntApi = {
   start: (config) => client.post('/hunt/start', { config, save: true }),
@@ -37,7 +45,10 @@ export const alertsApi = {
 
 // SSE helper
 export function createHuntStream(jobId, onEvent, onDone, onError) {
-  const url = `${BASE}/hunt/stream/${jobId}`;
+  let url = `${BASE}/hunt/stream/${jobId}`;
+  if (API_KEY) {
+    url += `?api_key=${encodeURIComponent(API_KEY)}`;
+  }
   const es = new EventSource(url);
 
   es.onmessage = (e) => {

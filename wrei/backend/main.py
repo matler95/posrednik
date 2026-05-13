@@ -26,16 +26,17 @@ app.add_middleware(
 API_KEY = os.getenv("WREI_API_KEY")
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
-async def verify_api_key(api_key: str = Depends(api_key_header)):
-    # Tymczasowo wyłączone dla frontendu, aby uniknąć błędów 403
-    return
-    # if not API_KEY:
-    #     return
-    # if api_key != API_KEY:
-    #     raise HTTPException(
-    #         status_code=status.HTTP_403_FORBIDDEN,
-    #         detail="Could not validate credentials"
-    #     )
+from fastapi import Request
+
+async def verify_api_key(request: Request, api_key: str = Depends(api_key_header)):
+    if not API_KEY:
+        return
+    token = api_key or request.query_params.get("api_key")
+    if token != API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Could not validate credentials"
+        )
 
 # Register Routers
 app.include_router(listings.router, dependencies=[Depends(verify_api_key)])

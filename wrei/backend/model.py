@@ -208,7 +208,7 @@ def condition_multiplier(listing: dict) -> float:
 def calculate_anomaly_score(listing: dict, rcn_benchmark: float | None = None) -> float:
     """
     Zwraca 1.0 jeśli oferta jest wysoce podejrzana (anomalia), 0.0 jeśli OK.
-    Anomalie to np. błędy w cenie (wpisana cena za m2 zamiast całości).
+    Anomalie to np. błędy w cenie (wpisana cena za m2 zamiast całości) lub garaże.
     """
     psm = price_per_square_meter(listing)
     if not psm: return 0.0
@@ -219,13 +219,20 @@ def calculate_anomaly_score(listing: dict, rcn_benchmark: float | None = None) -
     if rcn_benchmark and psm < rcn_benchmark * 0.4:
         score = max(score, 0.8)
         
-    # 2. Bardzo niska cena całkowita dla dużego metrażu
+    # 2. Bardzo niska cena całkowita (np. garaż/komórka lub błąd)
     price = listing.get("price")
     area = listing.get("area")
-    if price and area and price < 50_000 and area > 15:
+    
+    if price:
+        if price < 80_000:
+            score = max(score, 1.0)
+        elif price > 100_000_000:
+            score = max(score, 1.0)
+            
+    if area and area < 10:
         score = max(score, 1.0)
         
-    # 3. Cena/m2 niższa niż 3000 zł w Warszawie
+    # 3. Cena/m2 niższa niż 3000 zł 
     if psm < 3000:
         score = max(score, 0.9)
         
