@@ -152,11 +152,13 @@ async def hunt_job_detail(job_id: str):
     raise HTTPException(status_code=404, detail="Job nie znaleziony")
 
 @router.get("/get-hunt-config")
+@router.get("/hunt/get-hunt-config") # Alias dla spójności
 async def get_config():
     cfg = get_hunt_config()
     return cfg
 
 @router.post("/set-hunt-config")
+@router.post("/hunt/set-hunt-config") # Alias
 async def set_config(config: HuntConfigSchema):
     save_hunt_config(config.dict())
     return {"status": "saved"}

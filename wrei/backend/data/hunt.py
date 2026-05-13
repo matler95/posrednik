@@ -8,8 +8,14 @@ logger = logging.getLogger(__name__)
 def save_hunt_config(config_dict: dict):
     with get_conn() as conn:
         cur = conn.cursor()
-        cur.execute("DELETE FROM hunt_config")
-        cur.execute("INSERT INTO hunt_config (config) VALUES (%s)", (Json(config_dict),))
+        # Przekazujemy id=1 i NOW() bezpośrednio w SQL lub jako parametry
+        cur.execute("""
+            INSERT INTO hunt_config (id, config, updated_at)
+            VALUES (%s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (id) DO UPDATE SET
+                config = EXCLUDED.config,
+                updated_at = CURRENT_TIMESTAMP
+        """, (1, Json(config_dict)))
         conn.commit()
 
 def get_hunt_config() -> dict:

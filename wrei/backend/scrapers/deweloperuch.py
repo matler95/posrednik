@@ -67,70 +67,96 @@ WARSAW_DISTRICT_PATTERNS: dict[str, list[str]] = {
         r"mokot", r"pulawsk", r"pulaw", r"wierzbno", r"stegny", r"sluzew",
         r"sluzewiec", r"domaniewsk", r"woronicz", r"chodkiewicz", r"kazimierzow",
         r"rajsk", r"sieleck", r"czerniakowsk", r"dolna", r"wilanowsk",
+        r"chelmsk", r"czersk", r"modzelewsk", r"pejzazow", r"bukowinsk",
+        r"blacharsk", r"bobrowieck", r"idzikowsk", r"pory\b", r"cybernet",
+        r"postepu", r"konstruktorsk", r"raclawick", r"olimpijsk",
     ],
     "Ursynów": [
         r"ursynow", r"natolin", r"kabaty", r"imielin", r"stoklosy",
         r"lasek", r"al\. komisji", r"kkt", r"rosochy", r"zawiszy",
+        r"dembego", r"indiry gandhi", r"cynamonowa", r"belgradzka",
+        r"stryjensk", r"dereniowa", r"pileckieg", r"surowieckieg",
+        r"wyscigowa", r"kliszy",
     ],
     "Śródmieście": [
         r"srodmie", r"centrum\b", r"marszalkowsk", r"nowy swiat", r"aleje jerozolimsk",
         r"al\. jerozolimsk", r"towarowa", r"prosta", r"chmielna", r"krucza",
         r"emilii plater", r"swietokrzysk", r"al\. solidarnosci", r"noakowski",
-        r"smolna", r"browarna", r"solec", r"czerniakowska\b",
+        r"smolna", r"browarna", r"solec", r"czerniakowska\b", r"slominsk",
+        r"pokorna", r"muranow", r"bonifratersk", r"franciszkansk",
     ],
     "Wola": [
         r"\bwola\b", r"wolsk", r"mlynarska", r"chlodn", r"kasprzaka",
         r"dzialdowsk", r"redutow", r"sowinska", r"gorczewsk", r"skierniewick",
         r"korotynskieg", r"elekcyjn", r"obozow", r"deotymy",
-        r"\bwoli\b", r"na woli",
+        r"\bwoli\b", r"na woli", r"lucka", r"grzybowsk", r"jana pawla",
+        r"ogrodowa", r"kolejowa", r"siedmiogrodzk", r"pereca",
     ],
     "Ochota": [
         r"ochot", r"raszynsk", r"grojecka", r"opaczewsk", r"kopinska",
         r"siewiersk", r"gajowa", r"barska", r"filtrowa",
-        r"szczesnowicach", r"rakowiec",
+        r"szczesnowicach", r"rakowiec", r"wlodarzewsk", r"bitwy warszawsk",
+        r"dickensa", r"pawiensk",
     ],
     "Praga-Południe": [
         r"praga.poludnie", r"grochow", r"saska kepa", r"saskiej kepy",
         r"wiatraczna", r"ostrobramsk", r"grochowsk", r"podskarbinska",
         r"kamionkowsk", r"kobielsk", r"waszyngtona\b", r"meissnera",
+        r"stanczyka", r"zorzy", r"lukowska", r"miedzynarodowa", r"garibaldiego",
     ],
     "Praga-Północ": [
         r"praga.polnoc", r"targowa", r"zabkowsk", r"11 listopada",
         r"kaweczynsk", r"stalowa", r"brzesk", r"inzyniersk", r"konopacka",
+        r"szwedzka", r"wilenska", r"jagiellonsk",
     ],
     "Żoliborz": [
         r"zoliborz", r"wilson", r"marymont", r"krasinski", r"mickiewicz",
-        r"stołeczna", r"suzina", r"powazkowsk", r"boniFraternum",
-        r"potocka", r"czarnieckieg",
+        r"stoleczna", r"suzina", r"powazkowsk", r"bonifratrum",
+        r"potocka", r"czarnieckieg", r"rydygiera", r"felinskiego",
+        r"przasnysk", r"zajaczka", r"popieluszki", r"hanki czaki",
+        r"inwalidow", r"sybilli", r"wojska polskiego", r"dyminska",
+        r"smiala", r"wyspiansk", r"kozmiana", r"bitwy pod rokitna",
     ],
     "Bielany": [
         r"bielany", r"chomiczowk", r"mlociny", r"wrzeciono", r"piaski",
         r"dewajtis", r"broniewskieg", r"conrada", r"wolodyjowskieg",
+        r"reymonta", r"gwiazdzista", r"kilinskiego", r"rudnickiego",
+        r"wloscianska",
     ],
     "Bemowo": [
         r"bemowo", r"gorce\b", r"jelonki", r"lazurowa", r"dywizjonu 303",
-        r"batalionow chlopskich", r"lazurowa",
+        r"batalionow chlopskich", r"powstancow slaskich", r"czumy",
+        r"bolkowska", r"narwik",
     ],
     "Targówek": [
         r"targowek", r"brodna", r"zacisze", r"elsnerow", r"wincentego",
-        r"kondratowicz", r"szanajcy", r"ksiedza korzec",
+        r"kondratowicz", r"szanajcy", r"ksiedza korzec", r"krasiczynsk",
+        r"gilarska", r"radzyminsk",
     ],
     "Białołęka": [
-        r"bialoleka", r"tarchomin", r"swidersk", r"marywilsk", r"zeranск",
-        r"zeran", r"porajow", r"modlinska\b",
+        r"bialoleka", r"tarchomin", r"swidersk", r"marywilsk", r"zeransk",
+        r"zeran", r"porajow", r"modlinska\b", r"ceramiczn", r"ksiazkow",
+        r"skarbka z gor", r"glebocka", r"magiczna", r"berensona",
     ],
     "Wilanów": [
         r"wilanow", r"miasteczko wilanow", r"klimczaka", r"przyczolkow",
-        r"branickiego", r"vogla", r"kubickieg",
+        r"branickiego", r"vogla", r"kubickieg", r"sarmacka", r"krolewska",
     ],
     "Wawer": [
-        r"wawer", r"anin\b", r"miedzylesie", r"zerzeń", r"zerzen",
-        r"falenica", r"radosc", r"miedzeszyn",
+        r"wawer", r"anin\b", r"miedzylesie", r"zerzen",
+        r"falenica", r"radosc", r"miedzeszyn", r"patriotow",
+        r"lucylowska", r"trakt lubelski",
     ],
-    "Ursus": [r"\bursus\b", r"posag 7 panien"],
-    "Włochy": [r"wlochy", r"okecie", r"salomea", r"rakowiec"],
-    "Rembertów": [r"rembertow"],
-    "Wesoła": [r"\bwesola\b", r"stara milosna", r"milosna"],
+    "Ursus": [
+        r"\bursus\b", r"posag 7 panien", r"ryzowa", r"skorosze",
+        r"dzieci warszawy", r"keniga",
+    ],
+    "Włochy": [
+        r"wlochy", r"okecie", r"salomea", r"rakowiec", r"boksersk",
+        r"instalatorow", r"popularna", r"chrobaka",
+    ],
+    "Rembertów": [r"rembertow", r"chrusciela", r"strazacka"],
+    "Wesoła": [r"\bwesola\b", r"stara milosna", r"milosna", r"jana pawla ii"],
 }
 
 KRAKOW_DISTRICT_PATTERNS: dict[str, list[str]] = {
@@ -308,8 +334,22 @@ def _normalize(record: dict, city_slug: str) -> dict:
             or extract_district_from_address(record.get("street") or "", city_slug)
         )
 
+    # 3. Final structure and Composite ID
+    raw_id = record.get("id") or record.get("sale_rcn_id")
+    if not raw_id:
+        return {}
+
+    # Clean date and filter invalid years (e.g. 0201)
+    clean_date = creation_date[:10] if creation_date else "0000-00-00"
+    try:
+        y = int(clean_date[:4])
+        if y < 2000 or y > 2030:
+            return {}
+    except:
+        return {}
+
     return {
-        "sale_rcn_id": record.get("sale_rcn_id"),
+        "sale_rcn_id": f"{raw_id}_{clean_date}",
         "city": invest.get("city") or city_slug.capitalize(),
         "city_slug": city_slug,
         "street_address": street_address,
@@ -320,7 +360,7 @@ def _normalize(record: dict, city_slug: str) -> dict:
         "size": _to_float(record.get("size")),
         "rooms_number": record.get("rooms_number"),
         "floor_number": record.get("floor_number"),
-        "creation_date": creation_date[:10] if creation_date else None,
+        "creation_date": clean_date,
         "year": year,
         "quarter": quarter,
         "month": month,

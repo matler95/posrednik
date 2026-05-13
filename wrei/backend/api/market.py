@@ -23,20 +23,36 @@ async def market_districts(city_slug: str = Query("warszawa")):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
-        SELECT
-            tp.district,
-            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY tp.amount_sqm) AS rcn_median,
-            COUNT(tp.id) AS rcn_count,
-            AVG(l.price_per_m2) AS offer_avg,
-            COUNT(l.id) AS offer_count
-        FROM transaction_prices tp
-        FULL OUTER JOIN listings l ON l.district = tp.district AND l.city_slug = %s
-        WHERE tp.city_slug = %s
-          AND tp.district IS NOT NULL
-          AND tp.amount_sqm > 1000
-        GROUP BY tp.district
+        WITH rcn_stats AS (
+            SELECT
+                district,
+                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount_sqm) AS rcn_median,
+                COUNT(*) AS rcn_count
+            FROM transaction_prices
+            WHERE city_slug = %s 
+              AND district IS NOT NULL 
+              AND amount_sqm > 1000
+              AND creation_date > NOW() - INTERVAL '5 years'
+            GROUP BY district
+        ),
+        offer_stats AS (
+            SELECT
+                district,
+                AVG(price_per_m2) AS offer_avg,
+                COUNT(*) AS offer_count
+            FROM listings
+            WHERE city_slug = %s AND district IS NOT NULL
+            GROUP BY district
+        )
+        SELECT 
+            COALESCE(r.district, o.district) as district,
+            r.rcn_median,
+            r.rcn_count,
+            o.offer_avg,
+            o.offer_count
+        FROM rcn_stats r
+        FULL OUTER JOIN offer_stats o ON r.district = o.district
         ORDER BY rcn_median DESC NULLS LAST
-        LIMIT 20
     """, (city_slug, city_slug))
     rows = cur.fetchall()
 

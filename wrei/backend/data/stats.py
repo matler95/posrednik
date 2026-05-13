@@ -34,16 +34,50 @@ def get_market_stats(district: str = None) -> list[dict]:
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 def generate_market_stats():
-    """Agreguje dane z listings i zapisuje w market_stats."""
+    """
+    Agreguje dane rynkowe, priorytetyzując ceny transakcyjne (RCN) nad ofertowymi.
+    Zapisuje wyniki w tabeli market_stats.
+    """
     with get_conn() as conn:
         cur = conn.cursor()
         
-        # 1. Statystyki per dzielnica
+        # 1. Pobieramy statystyki z transakcji RCN (prawdziwe ceny sprzedaży)
+        # Bierzemy dane z ostatnich 5 lat dla lepszego pokrycia dzielnic
         cur.execute("""
             SELECT 
                 district, 
                 NULL as rooms, 
-                NULL as condition,
+                AVG(amount_sqm) as avg_price,
+                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount_sqm) as median_price,
+                COUNT(*) as sample_count
+            FROM transaction_prices
+            WHERE amount_sqm > 2000 
+              AND district IS NOT NULL
+              AND creation_date > NOW() - INTERVAL '5 years'
+            GROUP BY district
+            HAVING COUNT(*) >= 5
+        """)
+        rcn_rows = cur.fetchall()
+        
+        stats = []
+        seen_districts = set()
+        
+        for r in rcn_rows:
+            district = r[0]
+            stats.append({
+                'district': district,
+                'rooms': None,
+                'condition': None,
+                'avg': float(r[2]),
+                'median': float(r[3]),
+                'count': int(r[4])
+            })
+            seen_districts.add(district)
+        
+        # 2. Dla dzielnic, których NIE MA w RCN, robimy fallback do cen ofertowych (listings)
+        cur.execute("""
+            SELECT 
+                district, 
                 AVG(price_per_m2) as avg_price,
                 PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY price_per_m2) as median_price,
                 COUNT(*) as sample_count
@@ -52,18 +86,19 @@ def generate_market_stats():
             GROUP BY district
             HAVING COUNT(*) >= 3
         """)
-        rows = cur.fetchall()
+        listing_rows = cur.fetchall()
         
-        stats = []
-        for r in rows:
-            stats.append({
-                'district': r[0],
-                'rooms': r[1],
-                'condition': r[2],
-                'avg': float(r[3]),
-                'median': float(r[4]),
-                'count': int(r[5])
-            })
+        for r in listing_rows:
+            district = r[0]
+            if district not in seen_districts:
+                stats.append({
+                    'district': district,
+                    'rooms': None,
+                    'condition': None,
+                    'avg': float(r[1]),
+                    'median': float(r[2]),
+                    'count': int(r[3])
+                })
         
         upsert_market_stats(stats)
-        logger.info("[Stats] Wygenerowano statystyki dla %d dzielnic.", len(stats))
+        logger.info("[Stats] Zaktualizowano statystyki rynkowe (%d dzielnic). RCN: %d", len(stats), len(seen_districts))

@@ -206,13 +206,13 @@ async def import_rcn_history_task(ctx, city_slug: str, years: float = 20):
                 quarter_records += 1
                 
                 if len(batch) >= 200:
-                    saved = save_transaction_prices(batch)
+                    saved = await asyncio.to_thread(save_transaction_prices, batch)
                     total_saved += saved
                     batch = []
                     await asyncio.sleep(0.1)
             
             if batch:
-                saved = save_transaction_prices(batch)
+                saved = await asyncio.to_thread(save_transaction_prices, batch)
                 total_saved += saved
             
             print(f"  -> Kwartał {q_range} zakończony. Pobrano {quarter_records} rekordów. Suma: {total_saved}", flush=True)

@@ -228,9 +228,9 @@ export default function Stats() {
                     </td>
                     <td className="px-6 py-4 text-right">
                       <span className="text-slate-300 font-mono">
-                        {Math.round(d.offer_avg).toLocaleString()}
+                        {d.offer_avg ? Math.round(d.offer_avg).toLocaleString() : "Brak ofert"}
                       </span>
-                      <span className="text-[10px] text-premium-muted ml-1">zł</span>
+                      {d.offer_avg && <span className="text-[10px] text-premium-muted ml-1">zł</span>}
                     </td>
                     <td className="px-6 py-4 text-right text-premium-muted font-mono">
                       {d.count}

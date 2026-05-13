@@ -45,3 +45,4 @@ wrei/backend/diag_rcn.py
 wrei/backend/alerts/__pycache__/evaluator.cpython-312.pyc
 wrei/backend/alerts/__pycache__/evaluator.cpython-312.pyc
 wrei/backend/alerts/__pycache__/evaluator.cpython-312.pyc
+wrei/backend/ml/__pycache__/predictor.cpython-312.pyc

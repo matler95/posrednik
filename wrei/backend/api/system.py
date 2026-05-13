@@ -4,7 +4,7 @@ from fastapi import APIRouter
 from backend.db import get_conn
 
 logger = logging.getLogger(__name__)
-router = APIRouter(tags=["system"])
+router = APIRouter(prefix="/system", tags=["system"])
 
 @router.get("/health")
 async def health_check():
