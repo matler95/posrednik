@@ -544,14 +544,17 @@ def get_district_coverage_stats(city_slug: str = "warszawa") -> dict:
 # ---------------------------------------------------------------------------
 
 def _to_int(val) -> int | None:
+    if val is None: return None
     try:
-        return int(float(val)) if val is not None else None
+        s = str(val).replace(" ", "").replace(",", ".")
+        return int(float(s))
     except (ValueError, TypeError):
         return None
 
-
 def _to_float(val) -> float | None:
+    if val is None: return None
     try:
-        return float(val) if val is not None else None
+        s = str(val).replace(" ", "").replace(",", ".")
+        return float(s)
     except (ValueError, TypeError):
         return None

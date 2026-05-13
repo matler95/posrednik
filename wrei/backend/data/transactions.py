@@ -13,28 +13,44 @@ def save_transaction_prices(transactions: list[dict]) -> int:
 
         seen_ids = set()
         records = []
+        skipped_no_id = 0
+        skipped_duplicate = 0
+        skipped_no_price = 0
+        
         for t in transactions:
             rcn_id = t.get("sale_rcn_id")
-            if rcn_id and rcn_id not in seen_ids and t.get("amount_sqm"):
-                seen_ids.add(rcn_id)
-                records.append((
-                    rcn_id,
-                    t["city"],
-                    t["city_slug"],
-                    t.get("street_address"),
-                    t.get("invest_slug"),
-                    t.get("district"),
-                    t.get("amount"),
-                    t.get("amount_sqm"),
-                    t.get("size"),
-                    t.get("rooms_number"),
-                    t.get("floor_number"),
-                    t.get("creation_date"),
-                    t.get("year"),
-                    t.get("quarter"),
-                    t.get("month"),
-                    bool(t.get("is_flipped", False)),
-                ))
+            if not rcn_id:
+                skipped_no_id += 1
+                continue
+            if rcn_id in seen_ids:
+                skipped_duplicate += 1
+                continue
+            if not t.get("amount_sqm"):
+                skipped_no_price += 1
+                continue
+                
+            seen_ids.add(rcn_id)
+            records.append((
+                rcn_id,
+                t["city"],
+                t["city_slug"],
+                t.get("street_address"),
+                t.get("invest_slug"),
+                t.get("district"),
+                t.get("amount"),
+                t.get("amount_sqm"),
+                t.get("size"),
+                t.get("rooms_number"),
+                t.get("floor_number"),
+                t.get("creation_date"),
+                t.get("year"),
+                t.get("quarter"),
+                t.get("month"),
+                bool(t.get("is_flipped", False)),
+            ))
+
+        if skipped_no_id or skipped_duplicate or skipped_no_price:
+            print(f"  [DB Debug] Paczka {len(transactions)}: Pominięto (Brak ID: {skipped_no_id}, Duplikat: {skipped_duplicate}, Brak Ceny: {skipped_no_price})", flush=True)
 
         if not records:
             return 0

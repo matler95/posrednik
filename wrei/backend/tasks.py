@@ -182,6 +182,7 @@ async def import_rcn_history_task(ctx, city_slug: str, years: int):
         print(f"[Worker] Pobieram okres (filterLastTransactionDate): {range_str}...", flush=True)
         
         month_records = 0
+        month_saved = 0
         batch = []
         for tx in iter_transactions(city_slug, last_transaction_date=range_str):
             batch.append(tx)
@@ -190,15 +191,17 @@ async def import_rcn_history_task(ctx, city_slug: str, years: int):
             if len(batch) >= 500:
                 saved = save_transaction_prices(batch)
                 total_saved += saved
+                month_saved += saved
                 batch = []
                 save_checkpoint(job_key, {"last_month": current_date.isoformat(), "total_saved": total_saved})
-                print(f"  -> Zapisano paczkę 500 (Suma: {total_saved})", flush=True)
+                print(f"  -> Przetworzono 500 (Nowych: {saved}, Suma zadania: {total_saved})", flush=True)
         
         if batch:
             saved = save_transaction_prices(batch)
             total_saved += saved
+            month_saved += saved
             
-        print(f"[Worker] Zakończono {range_str}. Pobrano {month_records} rekordów. Suma: {total_saved}", flush=True)
+        print(f"[Worker] Zakończono {range_str}. Przejrzano {month_records}, Zapisano {month_saved} nowych. Suma: {total_saved}", flush=True)
         
         current_date = next_month
         save_checkpoint(job_key, {"last_month": current_date.isoformat(), "total_saved": total_saved})
